@@ -49,6 +49,9 @@ import {
   Loader2
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
+import { Capacitor } from '@capacitor/core';
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
 import { BottleFormat, CalculationInput, BottleFormatType, CalculationLog, ProductionRecap } from './types';
 import { PACKAGING_MACHINES, MachineProcedure, ProcedureStep, SupplyItem } from './operatingProcedures';
 import CameraCaptureModal from './components/CameraCaptureModal';
@@ -186,6 +189,68 @@ function compressImage(base64Str: string, maxWidth = 1000, maxHeight = 1000, qua
       resolve(base64Str);
     };
   });
+}
+
+/**
+ * Saves a file on Web, or writes to cache & shares on APK/Capacitor native platforms.
+ * @param filename The name of the file to save (e.g. 'doc.pdf', 'data.json')
+ * @param data The data, either as raw base64 string (for binary like PDF) or text string (for JSON/text)
+ * @param mimeType The mime type (e.g. 'application/pdf', 'application/json')
+ * @param isBase64 True if the data parameter is a raw base64-encoded string
+ */
+async function saveOrShareFile(
+  filename: string,
+  data: string,
+  mimeType: string,
+  isBase64: boolean = false
+) {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const writeOptions: any = {
+        path: filename,
+        data: data,
+        directory: Directory.Cache,
+      };
+      if (!isBase64) {
+        writeOptions.encoding = Encoding.UTF8;
+      }
+      
+      const fileResult = await Filesystem.writeFile(writeOptions);
+      
+      await Share.share({
+        title: filename,
+        url: fileResult.uri,
+        dialogTitle: `Partager ou enregistrer ${filename}`
+      });
+    } catch (error) {
+      console.error('Failed to save or share file on native platform:', error);
+      alert(`Erreur d'exportation sur mobile : ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else {
+    try {
+      let url: string;
+      if (isBase64) {
+        url = `data:${mimeType};base64,${data}`;
+      } else {
+        const blob = new Blob([data], { type: mimeType });
+        url = URL.createObjectURL(blob);
+      }
+      
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      
+      if (!isBase64) {
+        URL.revokeObjectURL(url);
+      }
+    } catch (error) {
+      console.error('Failed to download file on web:', error);
+      alert(`Erreur de téléchargement : ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
 }
 
 export default function App() {
@@ -393,7 +458,11 @@ export default function App() {
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
       pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      pdf.save(`Mode_Operatoire_${selectedMachine.name}.pdf`);
+      
+      const dataUri = pdf.output('datauristring');
+      const base64Index = dataUri.indexOf(';base64,');
+      const base64Data = base64Index !== -1 ? dataUri.substring(base64Index + 8) : dataUri;
+      await saveOrShareFile(`Mode_Operatoire_${selectedMachine.name}.pdf`, base64Data, 'application/pdf', true);
     } catch (error) {
       console.error('PDF generation failed:', error);
     } finally {
@@ -479,7 +548,7 @@ export default function App() {
     saveProductionRecap(selectedDateStr, { notes: text });
   };
 
-  const handleExportPDF = () => {
+  const handleExportPDF = async () => {
     const recap = productionRecaps[selectedDateStr] || { dateStr: selectedDateStr, notes: '', photos: [null, null, null] };
     
     let formattedDate = selectedDateStr;
@@ -660,23 +729,26 @@ export default function App() {
       doc.text(`Document généré via le Pilote de Production • Code Relève: recaps-${selectedDateStr} • Page ${p}/${totalPages}`, 15, 287);
     }
 
-    doc.save(`Fiche_Production_${selectedDateStr}.pdf`);
+    const dataUri = doc.output('datauristring');
+    const base64Index = dataUri.indexOf(';base64,');
+    const base64Data = base64Index !== -1 ? dataUri.substring(base64Index + 8) : dataUri;
+    await saveOrShareFile(`Fiche_Production_${selectedDateStr}.pdf`, base64Data, 'application/pdf', true);
   };
 
-  const handleExportData = () => {
+  const handleExportData = async () => {
     const data = {
       recaps: localStorage.getItem('bottle_production_recaps'),
       history: localStorage.getItem('bottle_calc_history'),
       checkedSteps: localStorage.getItem('bottle_checked_steps'),
       machines: localStorage.getItem('bottle_machines_custom')
     };
-    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `pilote_db_${new Date().toISOString().split('T')[0]}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const jsonString = JSON.stringify(data);
+    await saveOrShareFile(
+      `pilote_db_${new Date().toISOString().split('T')[0]}.json`,
+      jsonString,
+      'application/json',
+      false
+    );
   };
 
   const handleImportData = (e: React.ChangeEvent<HTMLInputElement>) => {
