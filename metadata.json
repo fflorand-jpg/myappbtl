@@ -1,0 +1,6 @@
+{
+  "name": "Calculateur de Production de Bouteilles",
+  "description": "Une application simple et élégante pour calculer la quantité nette de bouteilles d'eau à produire en soustrayant le stock du convoyeur et du palettiseur.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

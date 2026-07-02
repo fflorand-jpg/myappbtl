@@ -17,3 +17,53 @@ body {
   background-color: #f8fafc;
   color: #0f172a;
 }
+
+#production-print-section {
+  display: none !important;
+}
+
+@media print {
+  /* Hide standard page elements */
+  body * {
+    visibility: hidden;
+  }
+  
+  /* Show only our dedicated print section and its descendants */
+  #production-print-section,
+  #production-print-section * {
+    visibility: visible;
+  }
+  
+  /* Position the print container exactly */
+  #production-print-section {
+    display: block !important;
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background: white;
+  }
+  
+  /* Force page break after each photo block to achieve exactly 1 photo per page */
+  .print-photo-page {
+    page-break-after: always;
+    break-after: page;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    padding: 2rem;
+    box-sizing: border-box;
+  }
+
+  /* Optimize images for print */
+  .print-photo-img {
+    max-width: 100%;
+    max-height: 80vh;
+    object-fit: contain;
+  }
+}
+

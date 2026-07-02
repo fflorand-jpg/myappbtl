@@ -46,7 +46,8 @@ import {
   FileText,
   ChevronLeft,
   FileDown,
-  Loader2
+  Loader2,
+  Printer
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { Capacitor } from '@capacitor/core';
@@ -271,6 +272,8 @@ export default function App() {
     return `${y}-${m}-${d}`;
   });
 
+  const [piloteSubTab, setPiloteSubTab] = useState<'recap' | 'templates'>('recap');
+
   const mopRef = useRef<HTMLDivElement>(null);
 
   const prepareStylesheets = () => {
@@ -419,61 +422,417 @@ export default function App() {
     return val;
   };
 
-  const exportToPDF = async () => {
-    if (!mopRef.current) return;
-    
-    const restoreStyles = prepareStylesheets();
-    const restoreInline = prepareInlineStyles(document.documentElement);
-    const originalGetComputedStyle = window.getComputedStyle;
-    
-    // Override getComputedStyle to bypass OKLCH / modern CSS Color Level 4 errors in html2canvas
-    window.getComputedStyle = function (elt, pseudoElt) {
-      const style = originalGetComputedStyle(elt, pseudoElt);
-      return new Proxy(style, {
-        get(target, prop) {
-          if (prop === 'getPropertyValue') {
-            return function (propertyName: string) {
-              const value = target.getPropertyValue(propertyName);
-              return replaceModernColors(value);
-            };
-          }
-          
-          const val = target[prop as any] as any;
-          if (typeof val === 'string') {
-            return replaceModernColors(val);
-          }
-          if (typeof val === 'function') {
-            return val.bind(target);
-          }
-          return val;
-        }
-      }) as any;
-    };
-    
-    try {
-      const canvas = await html2canvas(mopRef.current);
-      const imgData = canvas.toDataURL('image/png');
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const imgProps = pdf.getImageProperties(imgData);
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      
-      const dataUri = pdf.output('datauristring');
-      const base64Index = dataUri.indexOf(';base64,');
-      const base64Data = base64Index !== -1 ? dataUri.substring(base64Index + 8) : dataUri;
-      await saveOrShareFile(`Mode_Operatoire_${selectedMachine.name}.pdf`, base64Data, 'application/pdf', true);
-    } catch (error) {
-      console.error('PDF generation failed:', error);
-    } finally {
-      window.getComputedStyle = originalGetComputedStyle;
-      restoreStyles();
-      restoreInline();
+  const handleExportStepsHTML = async () => {
+    if (!selectedMachine) {
+      alert("Aucune machine sélectionnée.");
+      return;
     }
+
+    const activeImgUrl = selectedMachine.containerImages && selectedMachine.containerImages.length > 0
+      ? (selectedMachine.containerImages.find(img => img.id === activeContainerId)?.imageUrl || selectedMachine.imageUrl)
+      : selectedMachine.imageUrl;
+
+    const currentFormatSteps = (selectedMachine.containerSteps && activeContainerId && selectedMachine.containerSteps[activeContainerId])
+      ? selectedMachine.containerSteps[activeContainerId]
+      : selectedMachine.mainSteps;
+
+    const activeFormatLabel = (selectedMachine.containerImages && activeContainerId)
+      ? selectedMachine.containerImages.find(img => img.id === activeContainerId)?.label
+      : null;
+
+    const formattedDate = new Date().toLocaleDateString('fr-FR', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+    const capitalizedDate = formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1);
+
+    const htmlContent = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fiche de Préparation - ${selectedMachine.name}</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+      margin: 0;
+      padding: 0;
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .no-print-banner {
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      color: #ffffff;
+      padding: 18px 24px;
+      border-radius: 16px;
+      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+    }
+    .banner-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 850;
+      letter-spacing: -0.02em;
+    }
+    .banner-sub {
+      margin: 4px 0 0 0;
+      font-size: 12px;
+      color: #94a3b8;
+      font-weight: 500;
+    }
+    .btn-print {
+      background-color: #2563eb;
+      color: #ffffff;
+      border: none;
+      padding: 10px 20px;
+      font-weight: 700;
+      font-size: 13px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.15);
+      transition: all 0.2s ease;
+    }
+    .btn-print:hover {
+      background-color: #1d4ed8;
+      transform: translateY(-1px);
+    }
+    .mop-card {
+      background-color: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 20px;
+      padding: 32px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.02);
+      box-sizing: border-box;
+      border-top: 8px solid #2563eb;
+    }
+    .mop-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-b: 2px solid #f1f5f9;
+      padding-bottom: 20px;
+      margin-bottom: 24px;
+      gap: 16px;
+    }
+    .header-left h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 900;
+      color: #0f172a;
+      letter-spacing: -0.025em;
+    }
+    .machine-badge {
+      display: inline-block;
+      font-family: monospace;
+      font-size: 12px;
+      font-weight: 700;
+      background-color: #f1f5f9;
+      color: #475569;
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid #e2e8f0;
+      margin-top: 6px;
+    }
+    .format-badge {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 700;
+      background-color: #eff6ff;
+      color: #1d4ed8;
+      padding: 3px 8px;
+      border-radius: 6px;
+      border: 1px solid #bfdbfe;
+      margin-top: 6px;
+      margin-left: 6px;
+    }
+    .header-right {
+      text-align: right;
+      font-size: 12px;
+      color: #64748b;
+      font-weight: 500;
+    }
+    .header-right p {
+      margin: 2px 0;
+    }
+    .schema-section {
+      background-color: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 28px;
+      text-align: center;
+    }
+    .schema-title {
+      font-size: 11px;
+      font-weight: 800;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+      text-align: left;
+    }
+    .schema-img-container {
+      background-color: #ffffff;
+      border-radius: 8px;
+      border: 1px dashed #cbd5e1;
+      padding: 12px;
+      display: inline-block;
+      max-width: 100%;
+      box-sizing: border-box;
+    }
+    .schema-img-container img {
+      max-height: 220px;
+      max-width: 100%;
+      object-fit: contain;
+    }
+    .steps-section-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: #475569;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 16px;
+      border-bottom: 1px solid #e2e8f0;
+      padding-bottom: 6px;
+    }
+    .step-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .step-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+      padding: 16px;
+      background-color: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 12px;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .step-checkbox {
+      width: 20px;
+      height: 20px;
+      border: 2px solid #cbd5e1;
+      border-radius: 5px;
+      margin-top: 2px;
+      flex-shrink: 0;
+      box-sizing: border-box;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+    .step-checkbox:hover {
+      border-color: #2563eb;
+    }
+    .step-item.checked .step-checkbox {
+      background-color: #10b981;
+      border-color: #10b981;
+    }
+    .step-item.checked .step-checkbox::after {
+      content: "✓";
+      color: white;
+      font-size: 12px;
+      font-weight: bold;
+    }
+    .step-content {
+      font-size: 13px;
+    }
+    .step-title-line {
+      font-weight: 700;
+      color: #0f172a;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .step-num {
+      font-family: monospace;
+      color: #64748b;
+      font-weight: 800;
+    }
+    .step-description {
+      margin: 4px 0 0 0;
+      color: #475569;
+      white-space: pre-line;
+      line-height: 1.5;
+    }
+    .visa-section {
+      margin-top: 40px;
+      border-top: 2px dashed #e2e8f0;
+      padding-top: 24px;
+      display: grid;
+      grid-template-cols: 1fr 1fr;
+      gap: 24px;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .visa-box {
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 16px;
+      min-height: 80px;
+    }
+    .visa-title {
+      font-size: 11px;
+      font-weight: 800;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+    .visa-line {
+      border-bottom: 1px solid #cbd5e1;
+      margin-top: 16px;
+      height: 20px;
+    }
+    .mop-footer {
+      text-align: center;
+      margin-top: 32px;
+      font-size: 10px;
+      color: #94a3b8;
+      font-family: monospace;
+    }
+
+    @media print {
+      body {
+        background-color: #ffffff;
+        color: #000000;
+      }
+      .container {
+        max-width: 100%;
+        padding: 0;
+        margin: 0;
+      }
+      .no-print-banner {
+        display: none !important;
+      }
+      .mop-card {
+        border: none;
+        box-shadow: none;
+        padding: 0;
+      }
+      .step-item {
+        border-color: #94a3b8;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="no-print-banner">
+      <div>
+        <h1 class="banner-title">Mode Opératoire d'Impression</h1>
+        <p class="banner-sub">Fiche de préparation prête pour l'impression physique ou PDF</p>
+      </div>
+      <button class="btn-print" onclick="window.print()">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0 1 10.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0 .229 1.144c.111.558-.303 1.056-.874 1.056H6.985c-.571 0-.985-.498-.874-1.056L6.34 18m11.32 0h-11.32M9 10.5h.008v.008H9V10.5Zm3 0h.008v.008H12V10.5Zm3 0h.008v.008H15V10.5Zm-9.25-3h12.5a1.25 1.25 0 0 1 1.25 1.25v3.75a1.25 1.25 0 0 1-1.25 1.25h-12.5A1.25 1.25 0 0 1 3.75 12.5V8.75A1.25 1.25 0 0 1 5 7.5ZM12 2.25c-1.913 0-3.52 1.398-3.81 3.25h7.62c-.29-1.852-1.897-3.25-3.81-3.25Z"></path>
+        </svg>
+        <span>Imprimer</span>
+      </button>
+    </div>
+
+    <div class="mop-card">
+      <div class="mop-header">
+        <div class="header-left">
+          <h1>Mode Opératoire : ${selectedMachine.name}</h1>
+          <span class="machine-badge">Code: ${selectedMachine.code}</span>
+          ${activeFormatLabel ? `<span class="format-badge">Format : ${activeFormatLabel}</span>` : ''}
+        </div>
+        <div class="header-right">
+          <p><strong>Fiche de Préparation Technique</strong></p>
+          <p>Ligne d'Embouteillage</p>
+          <p>Édité le ${capitalizedDate}</p>
+        </div>
+      </div>
+
+      ${activeImgUrl ? `
+      <div class="schema-section">
+        <div class="schema-title">Schéma / Photo d'Illustration</div>
+        <div class="schema-img-container">
+          <img src="${activeImgUrl}" alt="${selectedMachine.name}" />
+        </div>
+      </div>
+      ` : ''}
+
+      <div class="steps-section-title">Étapes de Préparation Recommandées</div>
+
+      <div class="step-list">
+        ${currentFormatSteps.map((step) => {
+          const isChecked = (checkedSteps[selectedMachine.id] || []).includes(step.num);
+          const checkedClass = isChecked ? 'checked' : '';
+          return `
+          <div class="step-item ${checkedClass}" onclick="this.classList.toggle('checked')">
+            <div class="step-checkbox"></div>
+            <div class="step-content">
+              <div class="step-title-line">
+                <span class="step-num">Étape ${step.num} :</span>
+                <span>${step.title}</span>
+              </div>
+              <p class="step-description">${step.description}</p>
+            </div>
+          </div>
+          `;
+        }).join('')}
+      </div>
+
+      <div class="mop-footer">
+        Fiche opérationnelle générée par l'Assistant de Shift • Code Document: mop-${selectedMachine.id}
+      </div>
+    </div>
+  </div>
+</body>
+</html>`;
+
+    await saveOrShareFile(`Mode_Operatoire_${selectedMachine.name}.html`, htmlContent, 'text/html', false);
   };
 
   const [isCompressing, setIsCompressing] = useState<boolean>(false);
   const [showSaveSuccess, setShowSaveSuccess] = useState<boolean>(false);
+  const [showAndroidPrintPreview, setShowAndroidPrintPreview] = useState<boolean>(false);
+  const [showPrintSuccessToast, setShowPrintSuccessToast] = useState<boolean>(false);
+
+  // States for the Android Print Spooler configuration
+  const [androidPrinter, setAndroidPrinter] = useState<string>('pdf'); // 'pdf', 'drive', 'printer_wifi'
+  const [androidCopies, setAndroidCopies] = useState<number>(1);
+  const [androidColor, setAndroidColor] = useState<'color' | 'mono'>('color');
+  const [androidPaperSize, setAndroidPaperSize] = useState<'A4' | 'Letter'>('A4');
+  const [androidOrientation, setAndroidOrientation] = useState<'portrait' | 'landscape'>('portrait');
+  const [androidExpandedOptions, setAndroidExpandedOptions] = useState<boolean>(false);
+  const [androidSelectedPages, setAndroidSelectedPages] = useState<Record<number, boolean>>({});
+
+  // States for Local PDF Document Editor & Generator (100% offline, no AI connection)
+  const [localPdfTitle, setLocalPdfTitle] = useState<string>('Procédure de nettoyage de la laveuse');
+  const [localPdfDate, setLocalPdfDate] = useState<string>(() => {
+    const d = new Date();
+    return d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+  });
+  const [localPdfAuthor, setLocalPdfAuthor] = useState<string>('F. Florand');
+  const [localPdfParagraphs, setLocalPdfParagraphs] = useState<string[]>([
+    "Cette procédure décrit les étapes indispensables pour nettoyer la laveuse rotative après une production complète.",
+    "Premièrement, couper l'alimentation électrique générale et fermer les vannes d'alimentation en eau chaude.",
+    "Deuxièmement, retirer les filtres à sédiments et les rincer soigneusement sous l'eau claire avec une brosse souple.",
+    "Enfin, effectuer un cycle de désinfection à vide avec le produit recommandé, puis consigner l'opération dans le registre."
+  ]);
+  const [selectedTemplate, setSelectedTemplate] = useState<string>('procedure');
+  const [localPdfError, setLocalPdfError] = useState<string>('');
 
   useEffect(() => {
     if (showSaveSuccess) {
@@ -481,6 +840,13 @@ export default function App() {
       return () => clearTimeout(timer);
     }
   }, [showSaveSuccess]);
+
+  useEffect(() => {
+    if (showPrintSuccessToast) {
+      const timer = setTimeout(() => setShowPrintSuccessToast(false), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [showPrintSuccessToast]);
 
   const [productionRecaps, setProductionRecaps] = useState<Record<string, ProductionRecap>>(() => {
     try {
@@ -500,6 +866,146 @@ export default function App() {
       localStorage.setItem('bottle_production_recaps', JSON.stringify(updatedMap));
       return updatedMap;
     });
+  };
+
+  // Function to process and generate PDF locally (completely offline, APK / hybrid compatible)
+  const genererPdfDepuisEditeurLocal = async () => {
+    try {
+      setLocalPdfError('');
+      if (!localPdfTitle.trim()) {
+        throw new Error("Le titre du document ne peut pas être vide.");
+      }
+
+      // Initialize jsPDF
+      const doc = new jsPDF('p', 'mm', 'a4');
+      
+      let y = 30;
+      const margin = 20;
+      const printableWidth = 170; // A4 standard is 210mm wide. 210 - (20 * 2) = 170mm
+
+      // Title layout
+      doc.setFont("helvetica", "bold");
+      doc.setFontSize(20);
+      doc.setTextColor(15, 23, 42); // slate-900
+      const titleLines = doc.splitTextToSize(localPdfTitle, printableWidth);
+      for (const line of titleLines) {
+        if (y + 10 > 280) {
+          doc.addPage();
+          y = 25;
+        }
+        doc.text(line, margin, y);
+        y += 8;
+      }
+
+      // Thin separator
+      doc.setDrawColor(226, 232, 240); // slate-200
+      doc.setLineWidth(0.5);
+      doc.line(margin, y + 2, 210 - margin, y + 2);
+      y += 12;
+
+      // Author & Date layout
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(10);
+      doc.setTextColor(100, 116, 139); // slate-500
+      doc.text(`Rédacteur : ${localPdfAuthor || 'Non précisé'}`, margin, y);
+      doc.text(`Date : ${localPdfDate}`, 210 - margin - doc.getTextWidth(`Date : ${localPdfDate}`), y);
+      y += 12;
+
+      // Paragraphs layout
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
+      doc.setTextColor(30, 41, 59); // slate-800
+
+      const validParagraphs = localPdfParagraphs.filter(p => p.trim() !== '');
+      if (validParagraphs.length === 0) {
+        throw new Error("Veuillez saisir au moins un paragraphe de contenu.");
+      }
+
+      for (const p of validParagraphs) {
+        const lines = doc.splitTextToSize(p, printableWidth);
+        for (const line of lines) {
+          if (y + 7 > 280) {
+            doc.addPage();
+            y = 25;
+            doc.setFont("helvetica", "normal");
+            doc.setFontSize(11);
+            doc.setTextColor(30, 41, 59);
+          }
+          doc.text(line, margin, y);
+          y += 6.5;
+        }
+        y += 5; // Spacing between paragraphs
+      }
+
+      // Page numbers footer
+      const totalPages = (doc as any).internal.getNumberOfPages();
+      for (let i = 1; i <= totalPages; i++) {
+        doc.setPage(i);
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(8);
+        doc.setTextColor(148, 163, 184); // slate-400
+        doc.text(`Document Technique Local • Page ${i}/${totalPages}`, margin, 287);
+      }
+
+      // Convert to Base64 and export using saveOrShareFile (Capacitor/Cordova friendly)
+      const dataUri = doc.output('datauristring');
+      const base64Index = dataUri.indexOf(';base64,');
+      const base64Data = base64Index !== -1 ? dataUri.substring(base64Index + 8) : dataUri;
+
+      // Clean filename
+      const cleanFilename = localPdfTitle
+        .toLowerCase()
+        .replace(/[^a-z0-9]/g, '_')
+        .substring(0, 35) || 'document_technique';
+
+      await saveOrShareFile(`${cleanFilename}.pdf`, base64Data, 'application/pdf', true);
+      return true;
+    } catch (err: any) {
+      console.error("Erreur génération PDF local:", err);
+      setLocalPdfError(err.message || "Erreur lors de la génération du fichier PDF.");
+      return false;
+    }
+  };
+
+  // Switch template and pre-populate fields
+  const appliquerTemplateLocal = (templateKey: string) => {
+    setSelectedTemplate(templateKey);
+    const todayStr = new Date().toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+    setLocalPdfDate(todayStr);
+
+    if (templateKey === 'production') {
+      setLocalPdfTitle("Rapport de Production - Ligne d'embouteillage");
+      setLocalPdfAuthor("Responsable de Ligne");
+      setLocalPdfParagraphs([
+        "Ce rapport technique consigne les performances globales et le suivi opérationnel de la ligne de conditionnement sur la journée de production.",
+        "La cadence nominale a été maintenue avec succès à 4500 bouteilles par heure. Aucune anomalie majeure de sertissage ou d'étiquetage n'est à signaler.",
+        "Le rendement global machine s'établit à 94.5% pour ce lot. Un nettoyage complet de fin de poste a été rigoureusement exécuté conformément aux protocoles sanitaires HACCP."
+      ]);
+    } else if (templateKey === 'securite') {
+      setLocalPdfTitle("Consignes de Sécurité - Intervention Machine");
+      setLocalPdfAuthor("Animateur HSE");
+      setLocalPdfParagraphs([
+        "Toute intervention d'entretien ou de débourrage sur les parties mobiles de la ligne exige l'application la plus stricte de la procédure de consignation électrique.",
+        "Il est impératif de s'équiper de l'ensemble des équipements de protection individuelle (EPI) obligatoires : lunettes anti-projections, gants renforcés et protections auditives.",
+        "En cas de dysfonctionnement critique ou de danger immédiat, actionnez instantanément l'un des boutons d'arrêt d'urgence de type 'coup de poing' disposés le long du convoie."
+      ]);
+    } else if (templateKey === 'incident') {
+      setLocalPdfTitle("Rapport d'Incident - Bourrage Étiqueteuse");
+      setLocalPdfAuthor("Technicien de Maintenance");
+      setLocalPdfParagraphs([
+        "Un arrêt de ligne imprévu de 14 minutes est survenu en cours de matinée suite à un bourrage répétitif sur le carrousel principal de distribution des étiquettes.",
+        "Après investigation, l'arbre d'entraînement a été nettoyé des résidus de colle et de papier, puis lubrifié. Les capteurs d'alignement optique ont subi un recalibrage.",
+        "Un essai de production à vide de 50 bouteilles a été effectué avec succès avant la relance effective de la production. Une surveillance accrue est recommandée sur les prochaines bobines."
+      ]);
+    } else {
+      // Vierge
+      setLocalPdfTitle("Document Technique Personnalisé");
+      setLocalPdfAuthor("Opérateur de Production");
+      setLocalPdfParagraphs([
+        "Saisissez vos paragraphes de contenu dans l'éditeur local ci-contre.",
+        "Vous pouvez librement ajouter de nouveaux paragraphes, les modifier ou supprimer ceux qui ne vous conviennent pas pour adapter ce document à votre situation."
+      ]);
+    }
   };
 
   const handleRecapImageUpload = (slotIndex: number, e: React.ChangeEvent<HTMLInputElement>) => {
@@ -735,6 +1241,214 @@ export default function App() {
     await saveOrShareFile(`Fiche_Production_${selectedDateStr}.pdf`, base64Data, 'application/pdf', true);
   };
 
+  const handleExportPhotosHTML = async () => {
+    const recap = productionRecaps[selectedDateStr];
+    const photos = recap?.photos ? recap.photos.filter((p): p is string => p !== null) : [];
+    if (photos.length === 0) {
+      alert("Aucune photo disponible dans ce rapport de shift.");
+      return;
+    }
+
+    let formattedDate = selectedDateStr;
+    try {
+      const d = new Date(selectedDateStr);
+      if (!isNaN(d.getTime())) {
+        formattedDate = d.toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      }
+    } catch (e) {
+      console.error(e);
+    }
+    const capitalizedDate = formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1);
+
+    const htmlContent = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Photos de Rapport - ${selectedDateStr}</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .no-print-banner {
+      background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+      color: #ffffff;
+      padding: 20px 24px;
+      border-radius: 16px;
+      margin-bottom: 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+    }
+    .banner-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+    }
+    .banner-sub {
+      margin: 4px 0 0 0;
+      font-size: 13px;
+      color: #94a3b8;
+      font-weight: 500;
+    }
+    .btn-print {
+      background-color: #2563eb;
+      color: #ffffff;
+      border: none;
+      padding: 11px 22px;
+      font-weight: 700;
+      font-size: 13px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
+      transition: all 0.2s ease;
+    }
+    .btn-print:hover {
+      background-color: #1d4ed8;
+      transform: translateY(-1px);
+    }
+    .btn-print:active {
+      transform: translateY(1px);
+    }
+    .photo-card {
+      background-color: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 20px;
+      padding: 24px;
+      margin-bottom: 32px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02);
+      box-sizing: border-box;
+    }
+    .photo-header {
+      text-align: left;
+      margin-bottom: 18px;
+      border-left: 4px solid #2563eb;
+      padding-left: 12px;
+    }
+    .photo-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 800;
+      color: #0f172a;
+    }
+    .photo-date {
+      margin: 2px 0 0 0;
+      font-size: 12px;
+      color: #64748b;
+      font-weight: 500;
+    }
+    .photo-frame {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background-color: #0f172a;
+      border-radius: 12px;
+      overflow: hidden;
+      padding: 8px;
+      box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+    .photo-frame img {
+      max-width: 100%;
+      max-height: 75vh;
+      object-fit: contain;
+      border-radius: 6px;
+    }
+    .photo-footer {
+      text-align: center;
+      margin-top: 16px;
+      font-size: 10px;
+      color: #94a3b8;
+      font-family: monospace;
+    }
+    @media print {
+      body {
+        background-color: #ffffff;
+      }
+      .container {
+        max-width: 100%;
+        padding: 0;
+        margin: 0;
+      }
+      .no-print-banner {
+        display: none !important;
+      }
+      .photo-card {
+        border: none;
+        box-shadow: none;
+        padding: 0;
+        margin: 0;
+        page-break-after: always;
+        break-after: page;
+        height: 100vh;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .photo-card:last-child {
+        page-break-after: avoid;
+        break-after: avoid;
+      }
+      .photo-frame {
+        background-color: transparent;
+        padding: 0;
+        box-shadow: none;
+      }
+      .photo-frame img {
+        max-height: 80vh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="no-print-banner">
+      <div>
+        <h1 class="banner-title">Photos de Rapport - Shift de Production</h1>
+        <p class="banner-sub">${capitalizedDate}</p>
+      </div>
+      <button class="btn-print" onclick="window.print()">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0 1 10.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0 .229 1.144c.111.558-.303 1.056-.874 1.056H6.985c-.571 0-.985-.498-.874-1.056L6.34 18m11.32 0h-11.32M9 10.5h.008v.008H9V10.5Zm3 0h.008v.008H12V10.5Zm3 0h.008v.008H15V10.5Zm-9.25-3h12.5a1.25 1.25 0 0 1 1.25 1.25v3.75a1.25 1.25 0 0 1-1.25 1.25h-12.5A1.25 1.25 0 0 1 3.75 12.5V8.75A1.25 1.25 0 0 1 5 7.5ZM12 2.25c-1.913 0-3.52 1.398-3.81 3.25h7.62c-.29-1.852-1.897-3.25-3.81-3.25Z"></path>
+        </svg>
+        <span>Imprimer la page</span>
+      </button>
+    </div>
+
+    ${photos.map((imgSrc, idx) => `
+    <div class="photo-card">
+      <div class="photo-header">
+        <h2 class="photo-title">Photo ${idx + 1} sur ${photos.length}</h2>
+        <p class="photo-date">${capitalizedDate}</p>
+      </div>
+      <div class="photo-frame">
+        <img src="${imgSrc}" alt="Photo ${idx + 1}" />
+      </div>
+      <div class="photo-footer">
+        Fiche de Production • Code Relève : recaps-${selectedDateStr} • Page ${idx + 1} / ${photos.length}
+      </div>
+    </div>
+    `).join('')}
+  </div>
+</body>
+</html>`;
+
+    await saveOrShareFile(`Photos_Rapport_Shift_${selectedDateStr}.html`, htmlContent, 'text/html', false);
+  };
+
   const handleExportData = async () => {
     const data = {
       recaps: localStorage.getItem('bottle_production_recaps'),
@@ -840,7 +1554,9 @@ export default function App() {
               troubleshooting: savedMach.troubleshooting || original.troubleshooting,
               imageUrl: savedMach.imageUrl || original.imageUrl,
               containerImages: mergedContainers,
-              supplies: savedMach.supplies !== undefined ? savedMach.supplies : original.supplies
+              supplies: savedMach.supplies !== undefined ? savedMach.supplies : original.supplies,
+              mainSteps: (savedMach.mainSteps && savedMach.mainSteps.length > 0) ? savedMach.mainSteps : original.mainSteps,
+              containerSteps: savedMach.containerSteps || original.containerSteps
             };
           }
           return original;
@@ -870,6 +1586,7 @@ export default function App() {
   const [editMachIcon, setEditMachIcon] = useState<string>('Settings');
   const [editMachDesc, setEditMachDesc] = useState<string>('');
   const [editMachSteps, setEditMachSteps] = useState<ProcedureStep[]>([]);
+  const [editForContainerFormat, setEditForContainerFormat] = useState<boolean>(true);
 
   const handleCreateMachine = () => {
     if (!newMachName.trim()) {
@@ -935,7 +1652,16 @@ export default function App() {
     setEditMachCode(selectedMachine.code);
     setEditMachIcon(selectedMachine.icon);
     setEditMachDesc(selectedMachine.description);
-    setEditMachSteps(selectedMachine.mainSteps ? selectedMachine.mainSteps.map(s => ({ ...s })) : []);
+    
+    const hasContainers = selectedMachine.containerImages && selectedMachine.containerImages.length > 0;
+    const isFormatEditing = hasContainers && activeContainerId;
+    setEditForContainerFormat(!!isFormatEditing);
+
+    const initialSteps = (isFormatEditing && selectedMachine.containerSteps && selectedMachine.containerSteps[activeContainerId])
+      ? selectedMachine.containerSteps[activeContainerId]
+      : (selectedMachine.mainSteps || []);
+
+    setEditMachSteps(initialSteps.map(s => ({ ...s })));
     setIsEditingSelectedMachine(true);
   };
 
@@ -946,17 +1672,34 @@ export default function App() {
     }
     const updated = machines.map(m => {
       if (m.id === selectedMachineId) {
-        return {
-          ...m,
-          name: editMachName.trim(),
-          code: editMachCode.trim() || m.code,
-          icon: editMachIcon,
-          description: editMachDesc.trim(),
-          mainSteps: editMachSteps.map((step, index) => ({
-            ...step,
-            num: index + 1
-          }))
-        };
+        const processedSteps = editMachSteps.map((step, index) => ({
+          ...step,
+          num: index + 1
+        }));
+
+        if (editForContainerFormat && activeContainerId) {
+          const nextContainerSteps = {
+            ...(m.containerSteps || {}),
+            [activeContainerId]: processedSteps
+          };
+          return {
+            ...m,
+            name: editMachName.trim(),
+            code: editMachCode.trim() || m.code,
+            icon: editMachIcon,
+            description: editMachDesc.trim(),
+            containerSteps: nextContainerSteps
+          };
+        } else {
+          return {
+            ...m,
+            name: editMachName.trim(),
+            code: editMachCode.trim() || m.code,
+            icon: editMachIcon,
+            description: editMachDesc.trim(),
+            mainSteps: processedSteps
+          };
+        }
       }
       return m;
     });
@@ -1024,7 +1767,7 @@ export default function App() {
   };
 
   // Active container format for machine-specific multipart images (e.g., verre 33cl, PET 50cl etc.)
-  const [activeContainerId, setActiveContainerId] = useState<string>('verre_33cl');
+  const [activeContainerId, setActiveContainerId] = useState<string>('verre_33cl_plat');
 
   // Currently selected tab of the machine details card (either 'mop' for operating procedure, or 'supplies' for supplies/fournitures)
   const [activeMachineSection, setActiveMachineSection] = useState<'mop' | 'supplies'>('mop');
@@ -2636,7 +3379,10 @@ export default function App() {
                     {machines.map((machine) => {
                       const isSelected = selectedMachineId === machine.id;
                       const completedCount = checkedSteps[machine.id]?.length || 0;
-                      const totalStepsCount = machine.mainSteps ? machine.mainSteps.length : 0;
+                      const machineSteps = (machine.id === selectedMachineId && machine.containerSteps && activeContainerId && machine.containerSteps[activeContainerId])
+                        ? machine.containerSteps[activeContainerId]
+                        : (machine.mainSteps || []);
+                      const totalStepsCount = machineSteps.length;
                       const allDone = completedCount === totalStepsCount && totalStepsCount > 0;
                       
                       const colorStyles: Record<string, string> = {
@@ -2837,8 +3583,33 @@ export default function App() {
                     </div>
 
                     <div className="border-t border-slate-100 pt-4">
-                      <div className="flex justify-between items-center mb-3">
-                        <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Instructions de Préparation</label>
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+                        <div className="flex flex-col gap-0.5">
+                          <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Instructions de Préparation</label>
+                          {selectedMachine.containerImages && selectedMachine.containerImages.length > 0 && activeContainerId && (
+                            <div className="flex flex-wrap items-center gap-2 mt-1">
+                              <span className="text-[10px] text-blue-700 font-bold bg-blue-50 border border-blue-150 rounded px-1.5 py-0.5">
+                                Format cible : {selectedMachine.containerImages.find(c => c.id === activeContainerId)?.label || activeContainerId}
+                              </span>
+                              <label className="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={!editForContainerFormat}
+                                  onChange={(e) => {
+                                    const nextVal = !e.target.checked;
+                                    setEditForContainerFormat(nextVal);
+                                    const steps = nextVal 
+                                      ? (selectedMachine.containerSteps?.[activeContainerId] || selectedMachine.mainSteps || [])
+                                      : (selectedMachine.mainSteps || []);
+                                    setEditMachSteps(steps.map(s => ({ ...s })));
+                                  }}
+                                  className="rounded border-slate-350 text-blue-600 focus:ring-blue-500/10 w-3 h-3 cursor-pointer"
+                                />
+                                <span>Éditer plutôt les étapes générales</span>
+                              </label>
+                            </div>
+                          )}
+                        </div>
                         <button
                           type="button"
                           onClick={() => {
@@ -2847,7 +3618,7 @@ export default function App() {
                               { num: editMachSteps.length + 1, title: 'Nouvelle consigne d\'exploitation', description: 'Renseignez ici la consigne de préparation.' }
                             ]);
                           }}
-                          className="px-2.5 py-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-1 cursor-pointer transition-all active:scale-95 shadow-3xs font-sans"
+                          className="px-2.5 py-1 text-[11px] font-bold text-blue-600 hover:text-blue-800 bg-blue-50 border border-blue-200 rounded-lg flex items-center gap-1 cursor-pointer transition-all active:scale-95 shadow-3xs font-sans self-start sm:self-auto"
                         >
                           <Plus className="w-3 h-3" />
                           <span>Ajouter une étape</span>
@@ -2946,11 +3717,12 @@ export default function App() {
 
                       <button
                         type="button"
-                        onClick={exportToPDF}
-                        className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-250 hover:text-slate-950 rounded-xl text-xs font-black cursor-pointer transition-colors flex items-center gap-1.5 shadow-3xs"
+                        onClick={handleExportStepsHTML}
+                        className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 shadow-2xs shadow-indigo-100 hover:shadow-xs cursor-pointer"
+                        title="Exporter les étapes de préparation sous forme de page HTML imprimable"
                       >
-                        <FileDown className="w-3.5 h-3.5 text-blue-600" />
-                        <span>PDF</span>
+                        <Camera className="w-3.5 h-3.5 text-indigo-100" />
+                        <span>Exporter HTML Étapes</span>
                       </button>
                       <button
                         type="button"
@@ -3000,40 +3772,37 @@ export default function App() {
                     <p className="text-xs text-slate-500 font-bold uppercase tracking-wider">Schéma ou Photo de la machine</p>
                     
                     <div className="bg-slate-50/50 border border-slate-150 p-4 rounded-xl flex flex-col gap-3">
-                      {/* Container types format tabs selectors if available */}
+                      {/* Container types format dropdown selector if available */}
                       {selectedMachine.containerImages && selectedMachine.containerImages.length > 0 && (
-                        <div className="flex flex-col gap-2 p-1.5 bg-slate-100 rounded-xl border border-slate-200">
-                          <div className="flex flex-wrap gap-1">
-                            {selectedMachine.containerImages.map((img) => {
-                              const isImgActive = activeContainerId === img.id;
-                              return (
-                                <button
-                                  type="button"
-                                  key={img.id}
-                                  onClick={() => setActiveContainerId(img.id)}
-                                  className={`flex-1 text-xs font-bold py-1.5 px-3 rounded transition-all cursor-pointer text-center whitespace-nowrap min-w-[80px] ${
-                                    isImgActive
-                                      ? 'bg-blue-600 text-white shadow-xs'
-                                      : 'text-slate-650 hover:bg-slate-200/80'
-                                  }`}
-                                >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-slate-100 rounded-xl border border-slate-200 shadow-3xs">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-slate-700 whitespace-nowrap">
+                              Format cible :
+                            </span>
+                            <select
+                              id="format-select-dropdown-schema"
+                              value={activeContainerId}
+                              onChange={(e) => setActiveContainerId(e.target.value)}
+                              className="text-xs font-extrabold bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 outline-none text-slate-800 cursor-pointer shadow-3xs"
+                            >
+                              {selectedMachine.containerImages.map((img) => (
+                                <option key={img.id} value={img.id}>
                                   {img.label}
-                                </button>
-                              );
-                            })}
+                                </option>
+                              ))}
+                            </select>
                           </div>
 
-                          {/* Tab rename interface */}
-                          <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 border-t border-slate-200/10 mt-1">
+                          {/* Format rename interface */}
+                          <div className="flex items-center justify-end">
                             {editingTabId === activeContainerId ? (
-                              <div className="flex items-center gap-1.5 w-full">
-                                <span className="text-[11px] font-bold text-slate-500 shrink-0 uppercase font-mono">Nouveau nom :</span>
+                              <div className="flex items-center gap-1.5 w-full sm:w-auto">
                                 <input
                                   type="text"
                                   value={editingTabLabel}
                                   onChange={(e) => setEditingTabLabel(e.target.value)}
-                                  className="flex-1 text-xs font-sans border border-slate-300 rounded px-2 py-1 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 font-semibold"
-                                  placeholder="ex: Vue Face, Capteurs..."
+                                  className="flex-1 sm:w-44 text-xs font-sans border border-slate-300 rounded-lg px-2.5 py-1.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 font-semibold"
+                                  placeholder="Nom du format..."
                                   autoFocus
                                   onKeyDown={(e) => {
                                     if (e.key === 'Enter') {
@@ -3046,35 +3815,30 @@ export default function App() {
                                 <button
                                   type="button"
                                   onClick={() => saveTabLabel(selectedMachine.id, activeContainerId, editingTabLabel)}
-                                  className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded cursor-pointer transition-all"
+                                  className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold rounded-lg cursor-pointer transition-all shrink-0"
                                 >
                                   Valider
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => setEditingTabId(null)}
-                                  className="px-2 py-1 bg-slate-200 hover:bg-slate-300 text-slate-650 text-xs font-bold rounded cursor-pointer transition-all"
+                                  className="px-2 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-650 text-xs font-bold rounded-lg cursor-pointer transition-all shrink-0"
                                 >
                                   Annuler
                                 </button>
                               </div>
                             ) : (
-                              <div className="flex items-center justify-between w-full">
-                                <span className="text-[11px] text-slate-500 font-semibold">
-                                  Sélection : <span className="text-slate-700 font-bold italic">"{selectedMachine.containerImages.find(img => img.id === activeContainerId)?.label}"</span>
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEditingTabId(activeContainerId);
-                                    setEditingTabLabel(selectedMachine.containerImages?.find(img => img.id === activeContainerId)?.label || '');
-                                  }}
-                                  className="text-[11px] font-bold text-blue-600 hover:text-blue-800 bg-white hover:bg-slate-50 border border-slate-250 px-2 py-1 rounded shadow-3xs inline-flex items-center gap-1 cursor-pointer transition-all"
-                                >
-                                  <Pencil className="w-2.5 h-2.5 text-blue-500" />
-                                  Renommer l'onglet
-                                </button>
-                              </div>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingTabId(activeContainerId);
+                                  setEditingTabLabel(selectedMachine.containerImages?.find(img => img.id === activeContainerId)?.label || '');
+                                }}
+                                className="text-[11px] font-bold text-blue-600 hover:text-blue-800 bg-white hover:bg-slate-50 border border-slate-250 px-2.5 py-1.5 rounded-lg shadow-3xs inline-flex items-center gap-1 cursor-pointer transition-all"
+                              >
+                                <Pencil className="w-2.5 h-2.5 text-blue-500" />
+                                Renommer ce format
+                              </button>
                             )}
                           </div>
                         </div>
@@ -3200,60 +3964,82 @@ export default function App() {
                   </div>
 
                   {/* STEP-BY-STEP INTERACTIVE CHECKLIST */}
-                  {selectedMachine.mainSteps && selectedMachine.mainSteps.length > 0 && (
-                    <div>
-                      <div className="flex justify-between items-center mb-3">
-                        <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
-                          Étapes de Préparation à Cocher
-                        </p>
-                        <div className="flex gap-3">
-                          <button
-                            onClick={() => handleStartEditingSelectedMachine()}
-                            className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer flex items-center gap-1"
-                          >
-                            Modifier les étapes
-                          </button>
+                  {(() => {
+                    const currentFormatSteps = (selectedMachine.containerSteps && activeContainerId && selectedMachine.containerSteps[activeContainerId])
+                      ? selectedMachine.containerSteps[activeContainerId]
+                      : selectedMachine.mainSteps;
+
+                    const hasSteps = currentFormatSteps && currentFormatSteps.length > 0;
+                    if (!hasSteps) return null;
+
+                    return (
+                      <div className="bg-slate-50/40 border border-slate-150 rounded-2xl p-4.5 flex flex-col gap-4">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
+                          <div className="flex flex-col gap-0.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                                Étapes de Préparation à Cocher
+                              </p>
+                              {selectedMachine.containerImages && selectedMachine.containerImages.length > 0 && activeContainerId && (
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded">
+                                  Format : {selectedMachine.containerImages.find(img => img.id === activeContainerId)?.label}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[10px] text-slate-400 font-medium">
+                              Cochez chaque consigne une fois effectuée
+                            </p>
+                          </div>
+
+                          <div className="flex gap-3 shrink-0">
+                            <button
+                              onClick={() => handleStartEditingSelectedMachine()}
+                              className="text-[11px] font-bold text-blue-600 hover:text-blue-800 hover:underline cursor-pointer flex items-center gap-1"
+                            >
+                              Modifier les étapes
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2.5">
+                          {currentFormatSteps.map((step) => {
+                            const isChecked = (checkedSteps[selectedMachine.id] || []).includes(step.num);
+                            return (
+                              <div
+                                key={step.num}
+                                onClick={() => toggleStep(selectedMachine.id, step.num)}
+                                className={`p-3.5 rounded-xl border transition-all cursor-pointer flex items-start gap-3.5 ${
+                                  isChecked
+                                    ? 'bg-emerald-50/50 border-emerald-250 text-slate-700'
+                                    : 'bg-white border-slate-200 hover:border-slate-300 text-slate-800 shadow-2xs'
+                                }`}
+                              >
+                                <div className="mt-0.5 shrink-0">
+                                  {isChecked ? (
+                                    <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
+                                  ) : (
+                                    <div className="w-5 h-5 border-2 border-slate-300 rounded hover:border-blue-500 transition-all" />
+                                  )}
+                                </div>
+                                
+                                <div className="text-xs">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-mono font-bold text-slate-400">Étape {step.num} :</span>
+                                    <span className={`font-bold ${isChecked ? 'line-through text-slate-400' : 'text-slate-900'}`}>
+                                      {step.title}
+                                    </span>
+                                  </div>
+                                  <p className={`mt-1 leading-relaxed whitespace-pre-line ${isChecked ? 'text-slate-400 italic' : 'text-slate-600'}`}>
+                                    {step.description}
+                                  </p>
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
                       </div>
-
-                      <div className="space-y-2.5">
-                        {selectedMachine.mainSteps.map((step) => {
-                          const isChecked = (checkedSteps[selectedMachine.id] || []).includes(step.num);
-                          return (
-                            <div
-                              key={step.num}
-                              onClick={() => toggleStep(selectedMachine.id, step.num)}
-                              className={`p-3.5 rounded-xl border transition-all cursor-pointer flex items-start gap-3.5 ${
-                                isChecked
-                                  ? 'bg-emerald-50/50 border-emerald-250 text-slate-700'
-                                  : 'bg-white border-slate-200 hover:border-slate-300 text-slate-800 shadow-2xs'
-                              }`}
-                            >
-                              <div className="mt-0.5 shrink-0">
-                                {isChecked ? (
-                                  <CheckSquare className="w-5 h-5 text-emerald-600 fill-emerald-100" />
-                                ) : (
-                                  <div className="w-5 h-5 border-2 border-slate-300 rounded hover:border-blue-500 transition-all" />
-                                )}
-                              </div>
-                              
-                              <div className="text-xs">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-mono font-bold text-slate-400">Étape {step.num} :</span>
-                                  <span className={`font-bold ${isChecked ? 'line-through text-slate-400' : 'text-slate-900'}`}>
-                                    {step.title}
-                                  </span>
-                                </div>
-                                <p className={`mt-1 leading-relaxed whitespace-pre-line ${isChecked ? 'text-slate-400 italic' : 'text-slate-600'}`}>
-                                  {step.description}
-                                </p>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   {/* TROUBLESHOOTING (Pannes et dépannage) */}
                    <div>
@@ -3557,16 +4343,16 @@ export default function App() {
                                  onChange={(e) => updateSupplyItem(sup.id, 'observation', e.target.value)}
                                  placeholder="Entrez des commentaires, références, consignes spécifiques..."
                                  className="w-full text-xs font-sans border border-slate-200 rounded p-1.5 bg-slate-50 hover:bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all leading-normal text-slate-700"
-                                />
-                             </div>
-                           </div>
-                         ))
-                       )}
-                     </div>
-                   </div>
-                 )}
+                               ></textarea>
+                            </div>
+                          </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
 
-                </div>)}
+                  </div>)}
 
               </div>
 
@@ -3769,15 +4555,15 @@ export default function App() {
                 {/* Panel recap */}
                 <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-sm flex flex-col gap-5">
                   
-                  {/* Title & subtitle */}
-                  <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+                  {/* Title & subtitle with sub-tab controls */}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 gap-3">
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
                         <Calendar className="w-5 h-5" />
                       </div>
                       <div>
                         <h3 className="text-xs font-bold uppercase tracking-widest text-blue-600 font-mono">
-                          Fiche de production
+                          Pilote de Production
                         </h3>
                         <h2 className="text-sm sm:text-base font-extrabold text-slate-900 font-sans capitalize mt-0.5">
                           {(() => {
@@ -3792,157 +4578,416 @@ export default function App() {
                         </h2>
                       </div>
                     </div>
-                    
-                    <div className="flex items-center gap-2">
-                      <button
-                        id="export-pdf-btn"
-                        onClick={handleExportPDF}
-                        className="px-3.5 py-1.5 bg-slate-950 hover:bg-slate-800 text-white border border-slate-900 rounded-xl text-xs font-bold transition-all flex items-center gap-2 shadow-2xs shadow-slate-100 hover:shadow-xs cursor-pointer"
-                        title="Télécharger la fiche de production au format PDF"
-                      >
-                        <FileDown className="w-3.5 h-3.5 text-blue-400" />
-                        <span className="hidden sm:inline">Exporter PDF</span>
-                      </button>
 
-                      {/* Live Badge indicator */}
-                      <div className="hidden xs:flex items-center gap-1 bg-emerald-50/60 text-emerald-800 px-2.5 py-1 rounded-full text-[10px] font-bold border border-emerald-100 font-mono shadow-3xs select-none">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                        <span>Enregistré</span>
-                      </div>
+                    {/* Sub-tabs segment switcher */}
+                    <div className="flex bg-slate-100 p-1 rounded-xl self-start sm:self-auto shrink-0 border border-slate-155">
+                      <button
+                        type="button"
+                        onClick={() => setPiloteSubTab('recap')}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-extrabold transition-all cursor-pointer ${
+                          piloteSubTab === 'recap'
+                            ? 'bg-white text-blue-600 shadow-3xs'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        📝 Rapport de Shift
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPiloteSubTab('templates')}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-extrabold transition-all cursor-pointer ${
+                          piloteSubTab === 'templates'
+                            ? 'bg-white text-blue-600 shadow-3xs'
+                            : 'text-slate-500 hover:text-slate-800'
+                        }`}
+                      >
+                        📂 Modèles de Fiches
+                      </button>
                     </div>
                   </div>
 
-                  {/* Report Observations Area */}
-                  <div className="flex flex-col gap-1.5">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono flex items-center gap-2">
-                      <FileText className="w-4 h-4 text-slate-400" />
-                      Observations, Incidents & Consignes de Relève :
-                    </label>
-                    <textarea
-                      rows={4}
-                      value={productionRecaps[selectedDateStr]?.notes || ''}
-                      onChange={(e) => handleRecapNotesChange(e.target.value)}
-                      placeholder="Décrivez les rendements, temps d'arrêt, pannes machines ou consignes spécifiques pour l'équipe suivante..."
-                      className="w-full text-xs font-sans border border-slate-200 rounded-xl p-3.5 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all leading-normal text-slate-755 placeholder-slate-400 min-h-[100px]"
-                    />
-                  </div>
+                  {piloteSubTab === 'recap' && (
+                    <>
+                      {/* Recap report action hub */}
+                      <div className="flex items-center justify-between gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-150">
+                        <div className="text-xs font-bold text-slate-600 font-sans">
+                          Actions du rapport
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {productionRecaps[selectedDateStr]?.photos?.some(p => p !== null) && (
+                            <button
+                              id="export-photos-html-btn"
+                              onClick={handleExportPhotosHTML}
+                              className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 shadow-2xs shadow-indigo-100 hover:shadow-xs cursor-pointer"
+                              title="Exporter toutes les photos de ce shift sous forme d'une page HTML d'impression autonome"
+                            >
+                              <Camera className="w-3.5 h-3.5 text-indigo-100" />
+                              <span>Exporter HTML Photos</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
 
-                  {/* Photo attachments grid (Exactly 3 slots) */}
-                  <div className="flex flex-col gap-3 mt-1">
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono flex items-center gap-2">
-                      <Camera className="w-4 h-4 text-slate-400" />
-                      Photos du récapitulatif (Exactement 3) :
-                    </label>
-                    
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                      {[0, 1, 2].map((slotIndex) => {
-                        const image64 = productionRecaps[selectedDateStr]?.photos?.[slotIndex] || null;
+                      {/* Report Observations Area */}
+                      <div className="flex flex-col gap-1.5 text-left">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono flex items-center gap-2">
+                          <FileText className="w-4 h-4 text-slate-400" />
+                          Observations, Incidents & Consignes de Relève :
+                        </label>
+                        <textarea
+                          rows={4}
+                          value={productionRecaps[selectedDateStr]?.notes || ''}
+                          onChange={(e) => handleRecapNotesChange(e.target.value)}
+                          placeholder="Décrivez les rendements, temps d'arrêt, pannes machines ou consignes spécifiques pour l'équipe suivante..."
+                          className="w-full text-xs font-sans border border-slate-200 rounded-xl p-3.5 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all leading-normal text-slate-755 placeholder-slate-400 min-h-[100px]"
+                        />
+                      </div>
+
+                      {/* Photo attachments grid (Exactly 3 slots) */}
+                      <div className="flex flex-col gap-3 mt-1 text-left">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono flex items-center gap-2">
+                          <Camera className="w-4 h-4 text-slate-400" />
+                          Photos du récapitulatif (Exactement 3) :
+                        </label>
                         
-                        return (
-                          <div key={slotIndex} className="flex flex-col gap-1">
-                            {image64 ? (
-                              <div className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 shadow-3xs bg-slate-950 flex items-center justify-center">
-                                <img
-                                  src={image64}
-                                  alt={`Récapitulatif ${slotIndex + 1}`}
-                                  className="w-full h-full object-cover select-none"
-                                  referrerPolicy="no-referrer"
-                                />
-                                
-                                {/* Overlay hover/mobile actions wrapper */}
-                                <div className="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 p-3 text-center">
-                                  <span className="text-[10px] font-bold text-white uppercase tracking-wider">Photo {slotIndex + 1}</span>
-                                  <div className="flex items-center gap-1.5 mt-1">
-                                    <button
-                                      onClick={() => {
-                                        setZoomImage(image64);
-                                        setZoomScale(1.1);
-                                        setZoomRotation(0);
-                                      }}
-                                      className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-all cursor-pointer text-[10px] font-semibold flex items-center gap-1 border border-white/5"
-                                      title="Agrandir l'image"
-                                    >
-                                      <Maximize2 className="w-3 h-3" />
-                                      <span>Zoomer</span>
-                                    </button>
-                                    <button
-                                      onClick={() => handleRecapImageDelete(slotIndex)}
-                                      className="p-1.5 bg-red-650 hover:bg-red-600 text-white rounded-lg transition-all cursor-pointer text-[10px] font-semibold border border-red-500/10"
-                                      title="Supprimer"
-                                    >
-                                      <Trash2 className="w-3 h-3" />
-                                    </button>
-                                  </div>
-                                </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          {[0, 1, 2].map((slotIndex) => {
+                            const image64 = productionRecaps[selectedDateStr]?.photos?.[slotIndex] || null;
+                            
+                            return (
+                              <div key={slotIndex} className="flex flex-col gap-1">
+                                {image64 ? (
+                                  <div className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 shadow-3xs bg-slate-950 flex items-center justify-center">
+                                    <img
+                                      src={image64}
+                                      alt={`Récapitulatif ${slotIndex + 1}`}
+                                      className="w-full h-full object-cover select-none"
+                                      referrerPolicy="no-referrer"
+                                    />
+                                    
+                                    {/* Overlay hover/mobile actions wrapper */}
+                                    <div className="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 p-3 text-center">
+                                      <span className="text-[10px] font-bold text-white uppercase tracking-wider">Photo {slotIndex + 1}</span>
+                                      <div className="flex items-center gap-1.5 mt-1">
+                                        <button
+                                          onClick={() => {
+                                            setZoomImage(image64);
+                                            setZoomScale(1.1);
+                                            setZoomRotation(0);
+                                          }}
+                                          className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-all cursor-pointer text-[10px] font-semibold flex items-center gap-1 border border-white/5"
+                                          title="Agrandir l'image"
+                                        >
+                                          <Maximize2 className="w-3 h-3" />
+                                          <span>Zoomer</span>
+                                        </button>
+                                        <button
+                                          onClick={() => handleRecapImageDelete(slotIndex)}
+                                          className="p-1.5 bg-red-650 hover:bg-red-600 text-white rounded-lg transition-all cursor-pointer text-[10px] font-semibold border border-red-500/10"
+                                          title="Supprimer"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    </div>
 
-                                {/* Persistent bottom strip for instant tactile trigger on phones */}
-                                <div className="absolute bottom-0 left-0 right-0 bg-slate-900/90 py-1 px-2 flex items-center justify-between border-t border-slate-800 z-10 sm:hidden">
-                                  <span className="text-[8px] font-bold text-slate-400 font-mono">Photo {slotIndex + 1}</span>
-                                  <div className="flex items-center gap-2">
-                                    <button
-                                      onClick={() => {
-                                        setZoomImage(image64);
-                                        setZoomScale(1.1);
-                                        setZoomRotation(0);
-                                      }}
-                                      className="p-1 bg-white/5 hover:bg-white/15 text-blue-400 rounded transition-all"
-                                    >
-                                      <Maximize2 className="w-3 h-3" />
-                                    </button>
-                                    <button
-                                      onClick={() => handleRecapImageDelete(slotIndex)}
-                                      className="p-1 bg-red-950/40 text-red-500 rounded transition-all"
-                                    >
-                                      <Trash2 className="w-3 h-3" />
-                                    </button>
+                                    {/* Persistent bottom strip for instant tactile trigger on phones */}
+                                    <div className="absolute bottom-0 left-0 right-0 bg-slate-900/90 py-1 px-2 flex items-center justify-between border-t border-slate-800 z-10 sm:hidden">
+                                      <span className="text-[8px] font-bold text-slate-400 font-mono">Photo {slotIndex + 1}</span>
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          onClick={() => {
+                                            setZoomImage(image64);
+                                            setZoomScale(1.1);
+                                            setZoomRotation(0);
+                                          }}
+                                          className="p-1 bg-white/5 hover:bg-white/15 text-blue-400 rounded transition-all"
+                                        >
+                                          <Maximize2 className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                          onClick={() => handleRecapImageDelete(slotIndex)}
+                                          className="p-1 bg-red-950/40 text-red-500 rounded transition-all"
+                                        >
+                                          <Trash2 className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    </div>
                                   </div>
-                                </div>
-                              </div>
-                            ) : (
-                              <label className={`relative flex flex-col items-center justify-center p-4 border-2 border-dashed border-slate-200 hover:border-blue-400 hover:bg-blue-50/20 bg-slate-50 rounded-xl aspect-square transition-all text-center select-none ${isCompressing ? 'cursor-wait bg-blue-50/10' : 'cursor-pointer'}`}>
-                                {isCompressing ? (
-                                  <>
-                                    <Loader2 className="w-6 h-6 text-blue-500 animate-spin mb-1.5" />
-                                    <span className="text-[11px] font-bold text-blue-600">Optimisation...</span>
-                                    <span className="text-[9px] text-slate-400 font-medium uppercase font-mono tracking-wider mt-0.5">Compression photo</span>
-                                  </>
                                 ) : (
-                                  <>
-                                    <Camera className="w-6 h-6 text-slate-400 mb-1.5" />
-                                    <span className="text-[11px] font-bold text-slate-700">Prendre / Charger</span>
-                                    <span className="text-[9px] text-slate-400 font-medium uppercase font-mono tracking-wider mt-0.5">Photo {slotIndex + 1}</span>
-                                  </>
+                                  <label className={`relative flex flex-col items-center justify-center p-4 border-2 border-dashed border-slate-200 hover:border-blue-400 hover:bg-blue-50/20 bg-slate-50 rounded-xl aspect-square transition-all text-center select-none ${isCompressing ? 'cursor-wait bg-blue-50/10' : 'cursor-pointer'}`}>
+                                    {isCompressing ? (
+                                      <>
+                                        <Loader2 className="w-6 h-6 text-blue-500 animate-spin mb-1.5" />
+                                        <span className="text-[11px] font-bold text-blue-600">Optimisation...</span>
+                                        <span className="text-[9px] text-slate-400 font-medium uppercase font-mono tracking-wider mt-0.5">Compression photo</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Camera className="w-6 h-6 text-slate-400 mb-1.5" />
+                                        <span className="text-[11px] font-bold text-slate-700">Prendre / Charger</span>
+                                        <span className="text-[9px] text-slate-400 font-medium uppercase font-mono tracking-wider mt-0.5">Photo {slotIndex + 1}</span>
+                                      </>
+                                    )}
+                                    <input
+                                      type="file"
+                                      accept="image/*"
+                                      capture="environment"
+                                      disabled={isCompressing}
+                                      onChange={(e) => handleRecapImageUpload(slotIndex, e)}
+                                      className="hidden"
+                                    />
+                                  </label>
                                 )}
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  capture="environment"
-                                  disabled={isCompressing}
-                                  onChange={(e) => handleRecapImageUpload(slotIndex, e)}
-                                  className="hidden"
-                                />
-                              </label>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      {/* Summary progress foot */}
+                      <div className="mt-2 text-[10px] text-slate-400 font-medium font-mono flex items-center justify-between bg-slate-50/80 px-4 py-2.5 rounded-xl border border-slate-100 text-left">
+                        <span>ID Relève : recaps-{selectedDateStr}</span>
+                        <span className="text-slate-655 font-bold uppercase flex items-center gap-1">
+                          📄 Remplissage : {
+                            (() => {
+                              const r = productionRecaps[selectedDateStr];
+                              const ph = r?.photos ? r.photos.filter(p => p !== null).length : 0;
+                              const nt = r?.notes?.trim().length > 0 ? 1 : 0;
+                              return `${ph}/3 photos • Rapport : ${nt ? 'Rempli' : 'Vide'}`;
+                            })()
+                          }
+                        </span>
+                      </div>
+                    </>
+                  )}
+
+                  {piloteSubTab === 'templates' && (
+                    <div className="flex flex-col gap-6 text-left">
+                      {/* Section intro info */}
+                      <div className="bg-slate-50 p-4 rounded-xl border border-slate-150 text-xs text-slate-600 flex items-start gap-2.5">
+                        <FileText className="w-4.5 h-4.5 text-blue-500 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-bold text-slate-800">Éditeur autonome de Fiches PDF</p>
+                          <p className="mt-0.5 leading-normal text-slate-500">Rédigez et téléchargez des fiches techniques au format A4. Tout s'exécute localement dans votre téléphone.</p>
+                        </div>
+                      </div>
+
+                      {/* Template Selection */}
+                      <div className="space-y-3">
+                        <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider block m-0">
+                          📂 Modèle de Document
+                        </h3>
+                        <div className="grid grid-cols-2 gap-2">
+                          {[
+                            { key: 'procedure', label: '🧹 Nettoyage', desc: 'Fiche nettoyage' },
+                            { key: 'production', label: '📊 Production', desc: 'Rapport prod' },
+                            { key: 'securite', label: '🛡️ Sécurité', desc: 'Consignes HSE' },
+                            { key: 'incident', label: '⚠️ Incident', desc: 'Rapport arrêt' },
+                          ].map((tpl) => (
+                            <button
+                              key={tpl.key}
+                              type="button"
+                              onClick={() => appliquerTemplateLocal(tpl.key)}
+                              className={`px-3 py-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col gap-0.5 ${
+                                selectedTemplate === tpl.key
+                                  ? 'bg-blue-50 border-blue-500 text-blue-900 shadow-xs'
+                                  : 'bg-slate-50 border-slate-150 hover:bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              <span className="text-xs font-bold">{tpl.label}</span>
+                              <span className="text-[9px] text-slate-400 font-semibold">{tpl.desc}</span>
+                            </button>
+                          ))}
+                        </div>
+                        
+                        <button
+                          type="button"
+                          onClick={() => appliquerTemplateLocal('custom')}
+                          className={`w-full py-2.5 rounded-xl border text-center transition-all cursor-pointer text-xs font-bold ${
+                            selectedTemplate === 'custom'
+                              ? 'bg-blue-50 border-blue-500 text-blue-900'
+                              : 'bg-slate-50 border-slate-150 hover:bg-slate-100 text-slate-600'
+                          }`}
+                        >
+                          ✏️ Créer un document personnalisé à partir de zéro
+                        </button>
+                      </div>
+
+                      {/* Document Metadata Form */}
+                      <div className="space-y-4 border-t border-slate-100 pt-4">
+                        <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider block m-0">
+                          ✍️ En-tête de la Fiche
+                        </h3>
+
+                        <div className="space-y-1.5">
+                          <label className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wide">Titre principal</label>
+                          <input
+                            type="text"
+                            value={localPdfTitle}
+                            onChange={(e) => setLocalPdfTitle(e.target.value)}
+                            placeholder="Ex: Procédure de consigne du palettiseur"
+                            className="w-full text-xs border border-slate-200 bg-slate-50 rounded-xl px-3.5 py-2.5 text-slate-800 outline-none focus:border-blue-500 focus:bg-white transition-all font-semibold"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div className="space-y-1.5">
+                            <label className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wide">Auteur / Rédacteur</label>
+                            <input
+                              type="text"
+                              value={localPdfAuthor}
+                              onChange={(e) => setLocalPdfAuthor(e.target.value)}
+                              placeholder="Ex: F. Florand"
+                              className="w-full text-xs border border-slate-200 bg-slate-50 rounded-xl px-3.5 py-2.5 text-slate-800 outline-none focus:border-blue-500 focus:bg-white transition-all font-medium"
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="text-[10.5px] font-bold text-slate-500 uppercase tracking-wide">Date</label>
+                            <input
+                              type="text"
+                              value={localPdfDate}
+                              onChange={(e) => setLocalPdfDate(e.target.value)}
+                              placeholder="Ex: 1 juillet 2026"
+                              className="w-full text-xs border border-slate-200 bg-slate-50 rounded-xl px-3.5 py-2.5 text-slate-800 outline-none focus:border-blue-500 focus:bg-white transition-all font-medium font-mono"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Paragraph Editor Section */}
+                      <div className="space-y-4 border-t border-slate-100 pt-4">
+                        <div className="flex items-center justify-between">
+                          <h3 className="text-xs font-bold text-slate-600 uppercase tracking-wider block m-0">
+                            📝 Paragraphes de contenu
+                          </h3>
+                          <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full font-bold">
+                            {localPdfParagraphs.length} total
+                          </span>
+                        </div>
+
+                        <div className="space-y-3.5 max-h-[350px] overflow-y-auto pr-1">
+                          {localPdfParagraphs.map((paragraph, index) => (
+                            <div key={index} className="p-3 bg-slate-50 rounded-xl border border-slate-150 space-y-2 relative group">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] font-mono font-bold text-slate-400">
+                                  Paragraphe #{index + 1}
+                                </span>
+                                {localPdfParagraphs.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const next = [...localPdfParagraphs];
+                                      next.splice(index, 1);
+                                      setLocalPdfParagraphs(next);
+                                    }}
+                                    className="p-1 text-slate-400 hover:text-rose-600 rounded hover:bg-rose-50 transition-all cursor-pointer"
+                                    title="Supprimer ce paragraphe"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                              <textarea
+                                rows={3}
+                                value={paragraph}
+                                onChange={(e) => {
+                                  const next = [...localPdfParagraphs];
+                                  next[index] = e.target.value;
+                                  setLocalPdfParagraphs(next);
+                                }}
+                                placeholder="Saisissez le texte de ce paragraphe..."
+                                className="w-full text-xs border border-slate-200 rounded-lg px-2.5 py-2 text-slate-700 outline-none focus:border-blue-500 focus:bg-white transition-all leading-normal"
+                              />
+                            </div>
+                          ))}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => setLocalPdfParagraphs([...localPdfParagraphs, ""])}
+                          className="w-full py-2.5 border-2 border-dashed border-slate-200 hover:border-blue-300 hover:bg-blue-50/20 text-slate-500 hover:text-blue-600 rounded-xl text-xs font-extrabold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Plus className="w-4 h-4" />
+                          <span>Ajouter un paragraphe</span>
+                        </button>
+
+                        {localPdfError && (
+                          <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs rounded-xl font-medium leading-relaxed">
+                            ⚠️ {localPdfError}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Preview and print sheet */}
+                      <div className="border-t border-slate-150 pt-5 space-y-4">
+                        <div className="flex items-center justify-between gap-3 flex-wrap">
+                          <span className="text-xs text-slate-500 font-bold">
+                            Aperçu du document d'impression (A4)
+                          </span>
+                          
+                          <button
+                            onClick={genererPdfDepuisEditeurLocal}
+                            className="px-5 py-2.5 bg-blue-650 hover:bg-blue-750 text-white rounded-xl font-extrabold text-xs transition-all flex items-center gap-1.5 shadow-md shadow-blue-500/10 cursor-pointer hover:scale-102 active:scale-98"
+                          >
+                            <Printer className="w-4 h-4 text-blue-100" />
+                            <span>Exporter le PDF (Format APK)</span>
+                          </button>
+                        </div>
+
+                        {/* A4 Sheet Mockup Container */}
+                        <div className="bg-white rounded-2xl border border-slate-200 shadow-md p-6 sm:p-8 relative min-h-[450px] flex flex-col font-sans border-t-8 border-t-blue-600 transition-all text-left">
+                          {/* Decorative stamp */}
+                          <div className="absolute top-6 right-6 opacity-5 select-none pointer-events-none border-4 border-slate-900 rounded-xl px-2 py-1 transform rotate-12 font-mono font-bold text-xs uppercase tracking-widest text-slate-900">
+                            LOCAL APP
+                          </div>
+
+                          {/* Document Sheet Header */}
+                          <div className="pb-4 mb-5 border-b border-slate-200 shrink-0">
+                            <h4 className="text-base sm:text-lg font-black text-slate-800 leading-tight">
+                              {localPdfTitle || "Nouveau Document Technique"}
+                            </h4>
+                            <div className="flex items-center justify-between text-xs text-slate-400 font-semibold italic mt-1.5">
+                              <p className="flex items-center gap-1">
+                                <span>👤</span>
+                                <span>Par {localPdfAuthor || "Non spécifié"}</span>
+                              </p>
+                              <p className="flex items-center gap-1">
+                                <span>📅</span>
+                                <span>Date : {localPdfDate}</span>
+                              </p>
+                            </div>
+                          </div>
+
+                          {/* Document Sheet Body paragraphs */}
+                          <div className="flex-1 space-y-4 text-xs sm:text-sm text-slate-700 leading-relaxed">
+                            {localPdfParagraphs.filter(p => p.trim() !== '').map((paragraph, index) => (
+                              <p key={index} className="indent-4 font-normal text-slate-800">
+                                {paragraph}
+                              </p>
+                            ))}
+                            {localPdfParagraphs.filter(p => p.trim() !== '').length === 0 && (
+                              <p className="text-slate-400 italic text-center py-10">
+                                Aucun contenu saisi. Remplissez les paragraphes dans l'éditeur ci-dessus.
+                              </p>
                             )}
                           </div>
-                        );
-                      })}
-                    </div>
-                  </div>
 
-                  {/* Summary progress foot */}
-                  <div className="mt-2 text-[10px] text-slate-400 font-medium font-mono flex items-center justify-between bg-slate-50/80 px-4 py-2.5 rounded-xl border border-slate-100">
-                    <span>ID Relève : recaps-{selectedDateStr}</span>
-                    <span className="text-slate-655 font-bold uppercase flex items-center gap-1">
-                      📄 Remplissage : {
-                        (() => {
-                          const r = productionRecaps[selectedDateStr];
-                          const ph = r?.photos ? r.photos.filter(p => p !== null).length : 0;
-                          const nt = r?.notes?.trim().length > 0 ? 1 : 0;
-                          return `${ph}/3 photos • Rapport : ${nt ? 'Rempli' : 'Vide'}`;
-                        })()
-                      }
-                    </span>
-                  </div>
+                          {/* Document Sheet Footer */}
+                          <div className="pt-4 mt-6 border-t border-slate-100 shrink-0 text-center">
+                            <p className="text-[9px] text-slate-400 font-mono">
+                              Document technique édité et généré localement • Format d'exportation A4 Standard
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="p-3.5 bg-blue-50/50 border border-blue-100 rounded-xl text-[11px] text-blue-700 font-medium leading-relaxed">
+                          💡 <strong>Fonctionnement 100% hors-ligne :</strong> Cet éditeur s'exécute directement dans le processeur de votre téléphone. Aucune connexion internet n'est sollicitée. Le PDF est créé instantanément et vous est proposé au partage local.
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                 </div>
               </div>
@@ -4111,6 +5156,350 @@ export default function App() {
           <span className="text-sm font-medium">Enregistré avec succès !</span>
         </div>
       )}
+
+      {/* Toast de succès pour l'impression */}
+      {showPrintSuccessToast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-emerald-600 text-white px-6 py-3.5 rounded-full shadow-xl z-50 flex items-center gap-2.5 animate-bounce">
+          <CheckCircle className="w-5 h-5 text-emerald-100" />
+          <span className="text-sm font-bold">Impression lancée avec succès !</span>
+        </div>
+      )}
+
+      {/* Android-style Print Preview Modal */}
+      {showAndroidPrintPreview && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-2 sm:p-4 overflow-y-auto">
+          <div className="bg-[#f1f3f4] text-slate-800 rounded-3xl w-full max-w-4xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden max-h-[92vh] sm:max-h-[88vh]">
+            
+            {/* Android Print Spooler - Header */}
+            <div className="bg-white px-5 py-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5 flex-1 min-w-0">
+                {/* Close Button */}
+                <button 
+                  onClick={() => setShowAndroidPrintPreview(false)}
+                  className="p-2 hover:bg-slate-100 text-slate-600 rounded-full transition-all cursor-pointer shrink-0"
+                  title="Fermer"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+
+                {/* Printer Selector */}
+                <div className="flex-1 min-w-0 text-left">
+                  <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider font-sans">
+                    Imprimante sélectionnée
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <select
+                      value={androidPrinter}
+                      onChange={(e) => setAndroidPrinter(e.target.value)}
+                      className="text-base font-extrabold text-slate-900 bg-transparent border-none outline-none focus:ring-0 p-0 pr-6 cursor-pointer font-sans appearance-none"
+                    >
+                      <option value="pdf">Enregistrer au format PDF</option>
+                      <option value="system">Service d'impression système (Android)</option>
+                      <option value="drive">Enregistrer dans Google Drive</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Android circular FAB Print Button */}
+              <div className="flex items-center gap-3 justify-end shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setAndroidExpandedOptions(!androidExpandedOptions)}
+                  className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 active:scale-95 rounded-full text-slate-600 transition-all cursor-pointer flex items-center gap-1 text-xs font-bold"
+                  title="Plus d'options d'impression"
+                >
+                  <span>Options</span>
+                  {androidExpandedOptions ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                </button>
+
+                <button
+                  onClick={() => {
+                    const selectedCount = Object.values(androidSelectedPages).filter(Boolean).length;
+                    if (selectedCount === 0) {
+                      alert("Veuillez sélectionner au moins une page à imprimer.");
+                      return;
+                    }
+                    setShowAndroidPrintPreview(false);
+                    setShowPrintSuccessToast(true);
+                    setTimeout(() => {
+                      window.focus();
+                      window.print();
+                    }, 250);
+                  }}
+                  className="w-14 h-14 bg-amber-500 hover:bg-amber-600 active:scale-90 text-slate-950 rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all cursor-pointer border-4 border-white shrink-0"
+                  title="Lancer l'impression"
+                >
+                  <Printer className="w-6 h-6 stroke-[2.5] text-slate-900 animate-pulse" />
+                </button>
+              </div>
+            </div>
+
+            {/* Android Print Spooler Options Sub-panel */}
+            <div className={`bg-white border-b border-slate-200 transition-all duration-300 overflow-hidden text-left ${androidExpandedOptions ? 'max-h-[350px] p-5' : 'max-h-0'}`}>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 font-sans text-xs">
+                
+                {/* Copies Options */}
+                <div className="space-y-1.5">
+                  <label className="text-slate-500 font-bold">Nombre de copies</label>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={androidCopies <= 1}
+                      onClick={() => setAndroidCopies(prev => Math.max(1, prev - 1))}
+                      className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center font-bold transition-all disabled:opacity-40 disabled:pointer-events-none cursor-pointer"
+                    >
+                      <Minus className="w-3.5 h-3.5" />
+                    </button>
+                    <span className="w-8 text-center text-sm font-extrabold text-slate-800">{androidCopies}</span>
+                    <button
+                      type="button"
+                      onClick={() => setAndroidCopies(prev => prev + 1)}
+                      className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center font-bold transition-all cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Color option */}
+                <div className="space-y-1.5">
+                  <label className="text-slate-500 font-bold">Couleur</label>
+                  <select
+                    value={androidColor}
+                    onChange={(e) => setAndroidColor(e.target.value as 'color' | 'mono')}
+                    className="w-full bg-slate-100 border border-slate-300 rounded-xl px-3 py-1.5 font-bold text-slate-800 outline-none focus:border-blue-500 cursor-pointer"
+                  >
+                    <option value="color">Couleur</option>
+                    <option value="mono">Noir et blanc (Monochrome)</option>
+                  </select>
+                </div>
+
+                {/* Orientation option */}
+                <div className="space-y-1.5">
+                  <label className="text-slate-500 font-bold">Orientation</label>
+                  <select
+                    value={androidOrientation}
+                    onChange={(e) => setAndroidOrientation(e.target.value as 'portrait' | 'landscape')}
+                    className="w-full bg-slate-100 border border-slate-300 rounded-xl px-3 py-1.5 font-bold text-slate-800 outline-none focus:border-blue-500 cursor-pointer"
+                  >
+                    <option value="portrait">Portrait</option>
+                    <option value="landscape">Paysage</option>
+                  </select>
+                </div>
+
+                {/* Paper Size Option */}
+                <div className="space-y-1.5">
+                  <label className="text-slate-500 font-bold">Taille du papier</label>
+                  <select
+                    value={androidPaperSize}
+                    onChange={(e) => setAndroidPaperSize(e.target.value as 'A4' | 'Letter')}
+                    className="w-full bg-slate-100 border border-slate-300 rounded-xl px-3 py-1.5 font-bold text-slate-800 outline-none focus:border-blue-500 cursor-pointer"
+                  >
+                    <option value="A4">A4 (210 x 297 mm)</option>
+                    <option value="Letter">Letter (216 x 279 mm)</option>
+                  </select>
+                </div>
+
+              </div>
+              
+              <div className="mt-4 pt-3 border-t border-slate-100 text-[10px] text-slate-500 font-medium">
+                * Note : L'application force le saut de page automatique pour garantir <strong className="text-slate-700">1 photo par page</strong>.
+              </div>
+            </div>
+
+            {/* Quick status line if options collapsed */}
+            {!androidExpandedOptions && (
+              <div className="bg-slate-50 border-b border-slate-200 px-6 py-2.5 text-left text-[11px] text-slate-500 font-bold flex gap-3 flex-wrap">
+                <span>Format : {androidPaperSize}</span>
+                <span>•</span>
+                <span>Mode : {androidColor === 'color' ? 'Couleur' : 'Noir & blanc'}</span>
+                <span>•</span>
+                <span>Copies : {androidCopies}</span>
+                <span>•</span>
+                <span>Orientation : {androidOrientation === 'portrait' ? 'Portrait' : 'Paysage'}</span>
+              </div>
+            )}
+
+            {/* Android Print Spooler Pages Preview */}
+            <div className="flex-1 overflow-y-auto bg-[#dfe2e6] p-6 flex flex-col items-center">
+              
+              <div className="w-full max-w-2xl flex flex-col gap-1.5 text-left mb-4">
+                <h4 className="text-xs font-bold text-slate-600 uppercase tracking-wider">
+                  Sélectionnez les pages à inclure
+                </h4>
+                <p className="text-[10px] text-slate-500 font-semibold leading-normal">
+                  Cochez ou décochez les cases ci-dessous pour inclure ou exclure chaque photo du lot final.
+                </p>
+              </div>
+
+              <div className="w-full max-w-3xl grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6 justify-items-center">
+                {(() => {
+                  const recap = productionRecaps[selectedDateStr];
+                  const photos = recap?.photos ? recap.photos.filter((p): p is string => p !== null) : [];
+                  if (photos.length === 0) {
+                    return <p className="text-slate-500 text-xs italic py-10 col-span-full">Aucune photo enregistrée sur cette fiche.</p>;
+                  }
+
+                  let formattedDate = selectedDateStr;
+                  try {
+                    const d = new Date(selectedDateStr);
+                    if (!isNaN(d.getTime())) {
+                      formattedDate = d.toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+                    }
+                  } catch (e) {
+                    console.error(e);
+                  }
+                  const capitalizedDate = formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1);
+
+                  return photos.map((imgSrc, idx) => {
+                    const isPageSelected = androidSelectedPages[idx] !== false;
+                    return (
+                      <div 
+                        key={idx} 
+                        className={`bg-white rounded-lg p-4 shadow-md w-full max-w-[220px] sm:max-w-[240px] border flex flex-col aspect-[1/1.414] transition-all duration-300 relative text-left ${
+                          isPageSelected ? 'border-blue-500 ring-2 ring-blue-500/20 opacity-100' : 'border-slate-350 opacity-60'
+                        }`}
+                      >
+                        {/* Android-style checkbox */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAndroidSelectedPages(prev => ({
+                              ...prev,
+                              [idx]: !isPageSelected
+                            }));
+                          }}
+                          className="absolute top-2 right-2 w-6 h-6 rounded-full flex items-center justify-center transition-all cursor-pointer z-10"
+                        >
+                          {isPageSelected ? (
+                            <CheckCircle className="w-6 h-6 text-blue-600 bg-white rounded-full fill-white" />
+                          ) : (
+                            <div className="w-5 h-5 rounded-full border-2 border-slate-400 bg-white/80" />
+                          )}
+                        </button>
+
+                        {/* Document Header Representation */}
+                        <div className="text-center pb-2 mb-2 border-b border-slate-100 shrink-0">
+                          <h4 className="text-[9px] font-extrabold text-slate-800 uppercase tracking-wide leading-none">
+                            Fiche de Production - Photo {idx + 1}
+                          </h4>
+                          <p className="text-[7px] text-slate-400 font-bold mt-0.5">
+                            {capitalizedDate}
+                          </p>
+                        </div>
+
+                        {/* Photo preview frame */}
+                        <div className="flex-1 bg-slate-50 border border-slate-100 rounded-lg overflow-hidden flex items-center justify-center p-1.5">
+                          <img 
+                            src={imgSrc} 
+                            alt={`Aperçu Page ${idx + 1}`} 
+                            className="max-h-full max-w-full object-contain rounded shadow-3xs"
+                            referrerPolicy="no-referrer"
+                          />
+                        </div>
+
+                        {/* Page status bottom */}
+                        <div className="text-center pt-2 mt-2 border-t border-slate-100 shrink-0 flex items-center justify-between">
+                          <span className="text-[9px] font-bold text-slate-500">
+                            Page {idx + 1}
+                          </span>
+                          <span className={`text-[8px] font-extrabold px-1.5 py-0.5 rounded ${isPageSelected ? 'bg-blue-50 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>
+                            {isPageSelected ? 'INCLUS' : 'EXCLU'}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            </div>
+
+            {/* Android Print Spooler Footer Actions */}
+            <div className="bg-white px-6 py-4 border-t border-slate-200 flex items-center justify-between gap-3 shrink-0">
+              <span className="text-xs text-slate-500 font-bold">
+                Total à imprimer : {Object.values(androidSelectedPages).filter(Boolean).length} page(s)
+              </span>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowAndroidPrintPreview(false)}
+                  className="px-5 py-2.5 hover:bg-slate-100 text-slate-600 font-bold rounded-xl text-xs transition-all cursor-pointer"
+                >
+                  Annuler
+                </button>
+
+                <button
+                  onClick={() => {
+                    const selectedCount = Object.values(androidSelectedPages).filter(Boolean).length;
+                    if (selectedCount === 0) {
+                      alert("Veuillez sélectionner au moins une page à imprimer.");
+                      return;
+                    }
+                    setShowAndroidPrintPreview(false);
+                    setShowPrintSuccessToast(true);
+                    setTimeout(() => {
+                      window.focus();
+                      window.print();
+                    }, 250);
+                  }}
+                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-extrabold rounded-xl text-xs transition-all flex items-center gap-2 shadow-md hover:shadow-lg cursor-pointer animate-pulse"
+                >
+                  <Printer className="w-4 h-4 text-blue-100" />
+                  <span>Confirmer</span>
+                </button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* Printable section hidden on screen, visible only during print */}
+      <div id="production-print-section">
+        {(() => {
+          const recap = productionRecaps[selectedDateStr];
+          const photos = recap?.photos ? recap.photos.filter((p): p is string => p !== null) : [];
+          const selectedPhotos = photos.filter((_, idx) => androidSelectedPages[idx] !== false);
+          
+          let formattedDate = selectedDateStr;
+          try {
+            const d = new Date(selectedDateStr);
+            if (!isNaN(d.getTime())) {
+              formattedDate = d.toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            }
+          } catch (e) {
+            console.error(e);
+          }
+          const capitalizedDate = formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1);
+
+          return selectedPhotos.map((imgSrc, idx) => (
+            <div key={idx} className="print-photo-page">
+              <div style={{ textAlign: 'center', marginBottom: '20px' }}>
+                <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#0f172a', margin: '0 0 4px 0', textTransform: 'uppercase' }}>
+                  Fiche de Production - Photo {idx + 1} / {selectedPhotos.length}
+                </h1>
+                <p style={{ fontSize: '14px', color: '#64748b', margin: '0', fontWeight: 'bold' }}>
+                  {capitalizedDate}
+                </p>
+              </div>
+              
+              <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', overflow: 'hidden' }}>
+                <img 
+                  src={imgSrc} 
+                  alt={`Fiche Production Photo ${idx + 1}`} 
+                  className="print-photo-img" 
+                  referrerPolicy="no-referrer"
+                />
+              </div>
+
+              <div style={{ textAlign: 'center', marginTop: '20px', fontSize: '10px', color: '#94a3b8', fontFamily: 'monospace' }}>
+                Document imprimé via le Pilote de Production • Code Relève : recaps-{selectedDateStr} • Page {idx + 1} sur {selectedPhotos.length}
+              </div>
+            </div>
+          ));
+        })()}
+      </div>
     </div>
   );
 }
