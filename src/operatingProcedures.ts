@@ -15,6 +15,7 @@ export interface SupplyItem {
   name: string;
   imageUrl?: string;
   observation?: string;
+  description?: string;
 }
 
 export interface MachineProcedure {

@@ -55,6 +55,7 @@ import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import { BottleFormat, CalculationInput, BottleFormatType, CalculationLog, ProductionRecap } from './types';
 import { PACKAGING_MACHINES, MachineProcedure, ProcedureStep, SupplyItem } from './operatingProcedures';
+import { db, MachineProcedureExtended } from './db/db';
 import CameraCaptureModal from './components/CameraCaptureModal';
 
 const BOTTLE_FORMATS: BottleFormat[] = [
@@ -272,7 +273,7 @@ export default function App() {
     return `${y}-${m}-${d}`;
   });
 
-  const [piloteSubTab, setPiloteSubTab] = useState<'recap' | 'templates'>('recap');
+  const [piloteSubTab, setPiloteSubTab] = useState<'recap'>('recap');
 
   const mopRef = useRef<HTMLDivElement>(null);
 
@@ -848,6 +849,25 @@ export default function App() {
     }
   }, [showPrintSuccessToast]);
 
+  useEffect(() => {
+    db.machines.orderBy('order').toArray().then(m => {
+        setMachines(m.length > 0 ? m : PACKAGING_MACHINES);
+    });
+    db.productionRecaps.toArray().then(r => {
+        const recaps: Record<string, ProductionRecap> = {};
+        r.forEach(recap => { recaps[recap.dateStr] = recap; });
+        setProductionRecaps(recaps);
+    });
+    db.history.toArray().then(h => {
+        setHistory(h);
+    });
+    db.checkedSteps.toArray().then(cs => {
+        const steps: Record<string, number[]> = {};
+        cs.forEach(item => { steps[item.machineId] = item.steps; });
+        setCheckedSteps(steps);
+    });
+  }, []);
+
   const [productionRecaps, setProductionRecaps] = useState<Record<string, ProductionRecap>>(() => {
     try {
       const saved = localStorage.getItem('bottle_production_recaps');
@@ -863,7 +883,7 @@ export default function App() {
       const curr = prev[dateStr] || { dateStr, notes: '', photos: [null, null, null] };
       const next = { ...curr, ...updated };
       const updatedMap = { ...prev, [dateStr]: next };
-      localStorage.setItem('bottle_production_recaps', JSON.stringify(updatedMap));
+      db.productionRecaps.put(next);
       return updatedMap;
     });
   };
@@ -1596,7 +1616,7 @@ export default function App() {
     const code = newMachCode.trim() || `MACH-${Math.floor(100 + Math.random() * 900)}`;
     const newId = newMachName.toLowerCase().replace(/[^a-z0-9]/g, '_') + '_' + Date.now();
     
-    const newMachine: MachineProcedure = {
+    const newMachine: MachineProcedureExtended = {
       id: newId,
       name: newMachName.trim(),
       code: code,
@@ -1610,13 +1630,15 @@ export default function App() {
       troubleshooting: [
         { issue: 'Défaut d\'initialisation', solution: 'Vérifier l\'arrêt d\'urgence ou réinitialiser le disjoncteur principal.' }
       ],
-      supplies: []
+      supplies: [],
+      order: machines.length
     };
 
-    const updated = [...machines, newMachine];
-    setMachines(updated);
-    localStorage.setItem('bottle_machines_custom', JSON.stringify(updated));
-    setSelectedMachineId(newId);
+    db.machines.add(newMachine).then(() => {
+        const updated = [...machines, newMachine];
+        setMachines(updated);
+        setSelectedMachineId(newId);
+    });
     
     // Reset form states
     setIsAddingMachine(false);
@@ -1953,6 +1975,24 @@ export default function App() {
     setActiveTab('calculator'); // auto focus calculations tab
   };
 
+  const moveMachine = async (id: string, direction: number) => {
+    const currentIndex = machines.findIndex(m => m.id === id);
+    if (currentIndex === -1) return;
+    const nextIndex = currentIndex + direction;
+    if (nextIndex < 0 || nextIndex >= machines.length) return;
+
+    const newMachines = [...machines];
+    [newMachines[currentIndex], newMachines[nextIndex]] = [newMachines[nextIndex], newMachines[currentIndex]];
+    
+    // Update order
+    const updated = newMachines.map((m, index) => ({ ...m, order: index } as MachineProcedureExtended));
+    
+    setMachines(updated);
+    
+    // Update Dexie
+    await db.machines.bulkPut(updated);
+  };
+
   // Checklist handler
   const toggleStep = (machineId: string, stepNum: number) => {
     const machineChecked = checkedSteps[machineId] || [];
@@ -2204,31 +2244,10 @@ export default function App() {
   };
 
   const handleSupplyImageUpload = (supplyId: string, e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64String = reader.result as string;
-        const updatedMachines = machines.map(m => {
-          if (m.id === selectedMachineId) {
-            const updatedSupplies = (m.supplies || []).map(sup => {
-              if (sup.id === supplyId) {
-                return { ...sup, imageUrl: base64String };
-              }
-              return sup;
-            });
-            return { ...m, supplies: updatedSupplies };
-          }
-          return m;
-        });
-        setMachines(updatedMachines);
-        localStorage.setItem('bottle_machines_custom', JSON.stringify(updatedMachines));
-      };
-      reader.readAsDataURL(file);
-    }
+    return;
   };
 
-  const updateSupplyItem = (supplyId: string, field: 'name' | 'observation', value: string) => {
+  const updateSupplyItem = (supplyId: string, field: 'name' | 'observation' | 'description', value: string) => {
     const updatedMachines = machines.map(m => {
       if (m.id === selectedMachineId) {
         const updatedSupplies = (m.supplies || []).map(sup => {
@@ -2252,7 +2271,7 @@ export default function App() {
         const currentSupplies = m.supplies || [];
         const updatedSupplies = [
           ...currentSupplies,
-          { id: newSupplyId, name: 'Nouvelle Fourniture', observation: 'Renseigner une observation...' }
+          { id: newSupplyId, name: 'Nouvelle Fourniture', description: 'Renseigner un descriptif...', observation: 'Renseigner une observation...' }
         ];
         return { ...m, supplies: updatedSupplies };
       }
@@ -3448,6 +3467,11 @@ export default function App() {
                               </div>
                             ) : null}
 
+                            <div className="flex flex-col">
+                                <button onClick={(e) => { e.stopPropagation(); moveMachine(machine.id, -1); }} className="text-[8px] p-0.5 hover:bg-slate-200 rounded">▲</button>
+                                <button onClick={(e) => { e.stopPropagation(); moveMachine(machine.id, 1); }} className="text-[8px] p-0.5 hover:bg-slate-200 rounded">▼</button>
+                            </div>
+
                             <button
                               type="button"
                               onClick={(e) => {
@@ -4248,90 +4272,16 @@ export default function App() {
                                </button>
                              </div>
 
-                             {/* Image area */}
-                             <div className="relative group overflow-hidden rounded-lg border border-slate-150 bg-slate-50 h-[140px] flex items-center justify-center transition-all">
-                               {sup.imageUrl ? (
-                                 <>
-                                   <img
-                                     src={sup.imageUrl}
-                                     alt={sup.name}
-                                     referrerPolicy="no-referrer"
-                                     className="h-full w-full object-contain p-1.5 transition-transform duration-300 group-hover:scale-102"
-                                   />
-                                   <div className="absolute inset-0 bg-slate-900/65 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center text-white gap-2 text-[10px] font-bold">
-                                     <div className="flex gap-1.5">
-                                       <button
-                                         type="button"
-                                         onClick={() => {
-                                           setZoomImage(sup.imageUrl || null);
-                                           setZoomScale(1.1);
-                                           setZoomRotation(0);
-                                         }}
-                                         className="px-2 py-1 bg-white/20 hover:bg-white/30 text-white rounded transition-colors inline-flex items-center gap-1 cursor-pointer"
-                                       >
-                                         <Maximize2 className="w-3 h-3" />
-                                         <span>Agrandir</span>
-                                       </button>
-                                       
-                                       <button
-                                         type="button"
-                                         onClick={() => setCameraActiveTarget({ type: 'supply', id: sup.id })}
-                                         className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors inline-flex items-center gap-1 cursor-pointer font-bold"
-                                       >
-                                         <Camera className="w-3 h-3" />
-                                         <span>Camera</span>
-                                       </button>
-                                       <label className="px-2 py-1 bg-white text-slate-900 rounded transition-colors inline-flex items-center gap-1 cursor-pointer font-bold font-sans">
-                                         <Upload className="w-3 h-3" />
-                                         <span>Changer</span>
-                                         <input
-                                           type="file"
-                                           accept="image/*"
-                                           onChange={(e) => handleSupplyImageUpload(sup.id, e)}
-                                           className="hidden"
-                                         />
-                                       </label>
-                                     </div>
-                                     <button
-                                       type="button"
-                                       onClick={() => {
-                                         const updatedMachines = machines.map(m => {
-                                           if (m.id === selectedMachineId) {
-                                             const updatedSupplies = (m.supplies || []).map(s => {
-                                               if (s.id === sup.id) {
-                                                 const { imageUrl, ...rest } = s;
-                                                 return { ...rest };
-                                               }
-                                               return s;
-                                             });
-                                             return { ...m, supplies: updatedSupplies };
-                                           }
-                                           return m;
-                                         });
-                                         setMachines(updatedMachines);
-                                         localStorage.setItem('bottle_machines_custom', JSON.stringify(updatedMachines));
-                                       }}
-                                       className="text-red-400 hover:text-red-350 transition-colors font-semibold"
-                                     >
-                                       Supprimer la photo
-                                     </button>
-                                   </div>
-                                 </>
-                               ) : (
-                                 <div className="flex flex-col items-center justify-center p-4 text-center">
-                                   <span className="text-[11px] text-slate-400 font-medium">Aucune photo</span>
-                                   <label className="mt-2 px-2.5 py-1 bg-white border border-slate-250 hover:bg-slate-50 text-[10px] font-bold text-slate-650 rounded cursor-pointer shadow-3xs transition-all inline-flex items-center gap-1 font-sans">
-                                     <Upload className="w-2.5 h-2.5 text-slate-500" />
-                                     <span>Ajouter une photo</span>
-                                     <input
-                                       type="file"
-                                       accept="image/*"
-                                       onChange={(e) => handleSupplyImageUpload(sup.id, e)}
-                                       className="hidden"
-                                     />
-                                   </label>
-                                 </div>
-                               )}
+                             {/* Descriptif / Rôle area */}
+                             <div className="flex flex-col gap-1 text-xs">
+                               <span className="font-bold text-slate-500 text-[10px] uppercase tracking-wider font-mono">Descriptif / Rôle de la fourniture :</span>
+                               <textarea
+                                 rows={2}
+                                 value={sup.description || ''}
+                                 onChange={(e) => updateSupplyItem(sup.id, 'description', e.target.value)}
+                                 placeholder="Entrez une description, rôle, dimensions ou caractéristiques de la fourniture..."
+                                 className="w-full text-xs font-sans border border-slate-200 rounded p-1.5 bg-slate-50 hover:bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all leading-normal text-slate-700"
+                               ></textarea>
                              </div>
 
                              {/* Observation / Comment area */}
@@ -4592,17 +4542,7 @@ export default function App() {
                       >
                         📝 Rapport de Shift
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => setPiloteSubTab('templates')}
-                        className={`px-3 py-1.5 rounded-lg text-[11px] font-extrabold transition-all cursor-pointer ${
-                          piloteSubTab === 'templates'
-                            ? 'bg-white text-blue-600 shadow-3xs'
-                            : 'text-slate-500 hover:text-slate-800'
-                        }`}
-                      >
-                        📂 Modèles de Fiches
-                      </button>
+
                     </div>
                   </div>
 
