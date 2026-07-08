@@ -35,5 +35,17 @@ export interface ProductionRecap {
   dateStr: string; // YYYY-MM-DD format
   notes: string;
   photos: (string | null)[]; // Exactly 3 elements, base64 strings or null
+  exported?: boolean;
+}
+
+export interface ProductionCalculation {
+  id: string;
+  timestamp: string; // ISO string or similar
+  conveyorBottles: number | '';
+  palletizerCartons: number | '';
+  palletizerMultiplier: number;
+  tracerBottles: number | '';
+  destination: string;
+  finalQuantity: number;
 }
 

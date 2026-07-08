@@ -3,6 +3,8 @@ import { motion, AnimatePresence } from 'motion/react';
 import html2canvas from 'html2canvas';
 import { 
   Droplet, 
+  Save,
+  MapPin,
   Layers, 
   RotateCcw, 
   History, 
@@ -16,6 +18,7 @@ import {
   Info,
   Calendar,
   Layers3,
+  Calculator,
   Sparkles,
   Wind,
   Tag,
@@ -47,13 +50,18 @@ import {
   ChevronLeft,
   FileDown,
   Loader2,
-  Printer
+  Printer,
+  Workflow,
+  Boxes,
+  Barcode,
+  Download,
+  CalendarDays
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { Capacitor } from '@capacitor/core';
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
-import { BottleFormat, CalculationInput, BottleFormatType, CalculationLog, ProductionRecap } from './types';
+import { BottleFormat, CalculationInput, BottleFormatType, CalculationLog, ProductionRecap, ProductionCalculation } from './types';
 import { PACKAGING_MACHINES, MachineProcedure, ProcedureStep, SupplyItem } from './operatingProcedures';
 import { db, MachineProcedureExtended } from './db/db';
 import CameraCaptureModal from './components/CameraCaptureModal';
@@ -194,6 +202,223 @@ function compressImage(base64Str: string, maxWidth = 1000, maxHeight = 1000, qua
 }
 
 /**
+ * Composant pour calculer et afficher de façon asynchrone la taille d'une image locale ou base64.
+ */
+function PhotoSizeIndicator({ imageSource }: { imageSource: string | null }) {
+  const [sizeStr, setSizeStr] = useState<string>('Calcul...');
+
+  useEffect(() => {
+    if (!imageSource) {
+      setSizeStr('');
+      return;
+    }
+    let active = true;
+
+    const fetchSize = async () => {
+      try {
+        let sizeInBytes = 0;
+        if (imageSource.startsWith('data:image') || imageSource.startsWith('blob:')) {
+          const base64DataOnly = imageSource.split(',')[1] || imageSource;
+          const padding = base64DataOnly.endsWith('==') ? 2 : base64DataOnly.endsWith('=') ? 1 : 0;
+          sizeInBytes = Math.round((base64DataOnly.length * 3) / 4) - padding;
+        } else if (Capacitor.isNativePlatform()) {
+          try {
+            const statResult = await Filesystem.stat({
+              path: imageSource
+            });
+            sizeInBytes = statResult.size;
+          } catch (e) {
+            const b64 = await readImageAsBase64(imageSource);
+            if (b64) {
+              const base64DataOnly = b64.split(',')[1] || b64;
+              const padding = base64DataOnly.endsWith('==') ? 2 : base64DataOnly.endsWith('=') ? 1 : 0;
+              sizeInBytes = Math.round((base64DataOnly.length * 3) / 4) - padding;
+            }
+          }
+        } else {
+          sizeInBytes = Math.round((imageSource.length * 3) / 4);
+        }
+
+        if (active) {
+          if (sizeInBytes === 0) {
+            setSizeStr('0 Ko');
+          } else {
+            const k = 1024;
+            const sizes = ['Octets', 'Ko', 'Mo'];
+            const i = Math.floor(Math.log(sizeInBytes) / Math.log(k));
+            const val = sizeInBytes / Math.pow(k, i);
+            setSizeStr(`${val.toFixed(i === 0 ? 0 : 1).replace('.', ',')} ${sizes[i]}`);
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        if (active) setSizeStr('Taille inconnue');
+      }
+    };
+
+    fetchSize();
+    return () => {
+      active = false;
+    };
+  }, [imageSource]);
+
+  if (!imageSource) return null;
+
+  return (
+    <span className="text-[10px] font-mono text-slate-400 font-semibold bg-slate-100 px-1.5 py-0.5 rounded-md">
+      {sizeStr}
+    </span>
+  );
+}
+
+/**
+ * Composant pour calculer et afficher le poids cumulé de toutes les photos d'un rapport.
+ */
+function TotalPhotosSizeIndicator({ images }: { images: (string | null)[] }) {
+  const [totalSizeStr, setTotalSizeStr] = useState<string>('Calcul...');
+
+  useEffect(() => {
+    let active = true;
+
+    const calculateTotal = async () => {
+      let totalBytes = 0;
+      for (const img of images) {
+        if (!img) continue;
+        try {
+          if (img.startsWith('data:image') || img.startsWith('blob:')) {
+            const base64DataOnly = img.split(',')[1] || img;
+            const padding = base64DataOnly.endsWith('==') ? 2 : base64DataOnly.endsWith('=') ? 1 : 0;
+            totalBytes += Math.round((base64DataOnly.length * 3) / 4) - padding;
+          } else if (Capacitor.isNativePlatform()) {
+            try {
+              const statResult = await Filesystem.stat({
+                path: img
+              });
+              totalBytes += statResult.size;
+            } catch (e) {
+              const b64 = await readImageAsBase64(img);
+              if (b64) {
+                const base64DataOnly = b64.split(',')[1] || b64;
+                const padding = base64DataOnly.endsWith('==') ? 2 : base64DataOnly.endsWith('=') ? 1 : 0;
+                totalBytes += Math.round((base64DataOnly.length * 3) / 4) - padding;
+              }
+            }
+          } else {
+            totalBytes += Math.round((img.length * 3) / 4);
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }
+
+      if (active) {
+        if (totalBytes === 0) {
+          setTotalSizeStr('0 Ko');
+        } else {
+          const k = 1024;
+          const sizes = ['Octets', 'Ko', 'Mo'];
+          const i = Math.floor(Math.log(totalBytes) / Math.log(k));
+          const val = totalBytes / Math.pow(k, i);
+          setTotalSizeStr(`${val.toFixed(i === 0 ? 0 : 1).replace('.', ',')} ${sizes[i]}`);
+        }
+      }
+    };
+
+    calculateTotal();
+    return () => {
+      active = false;
+    };
+  }, [images]);
+
+  return (
+    <span className="text-slate-500 font-semibold font-mono bg-slate-150 px-2 py-0.5 rounded-md">
+      Poids total des photos : {totalSizeStr}
+    </span>
+  );
+}
+
+/**
+ * Convertis une source d'image (qui peut être un chemin d'accès local sur le téléphone ou un base64)
+ * en un URL sécurisé et lisible par la balise HTML <img> du webview sur mobile.
+ */
+function resolveImageSrc(imgSource: string | null): string {
+  if (!imgSource) return '';
+  if (imgSource.startsWith('data:image') || imgSource.startsWith('blob:') || imgSource.startsWith('http://') || imgSource.startsWith('https://')) {
+    return imgSource;
+  }
+  if (Capacitor.isNativePlatform()) {
+    return Capacitor.convertFileSrc(imgSource);
+  }
+  return imgSource;
+}
+
+/**
+ * Enregistre une image compressée en base64 sous forme de fichier JPEG physique
+ * dans le système de fichiers sécurisé/persistant de l'application sur le téléphone.
+ * Retourne le chemin d'accès (URI local de type file://).
+ */
+async function saveImageToLocalFilesystem(base64Data: string, dateStr: string, slotIndex: number): Promise<string> {
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const filename = `recap_photo_${dateStr}_${slotIndex}_${Date.now()}.jpg`;
+      const base64DataOnly = base64Data.split(',')[1] || base64Data;
+      
+      const writeResult = await Filesystem.writeFile({
+        path: filename,
+        data: base64DataOnly,
+        directory: Directory.Data
+      });
+      return writeResult.uri;
+    } catch (e) {
+      console.error("Échec de l'écriture de l'image sur le stockage local :", e);
+      return base64Data;
+    }
+  }
+  return base64Data;
+}
+
+/**
+ * Supprime le fichier image du système de fichiers du téléphone pour éviter
+ * d'accumuler des fichiers inutilisés et d'alourdir le stockage.
+ */
+async function deleteLocalFilesystemImage(filePath: string | null) {
+  if (filePath && Capacitor.isNativePlatform()) {
+    if (!filePath.startsWith('data:') && !filePath.startsWith('blob:')) {
+      try {
+        await Filesystem.deleteFile({
+          path: filePath
+        });
+      } catch (e) {
+        console.error("Échec de la suppression de l'image locale :", e);
+      }
+    }
+  }
+}
+
+/**
+ * Lit un fichier local (chemin URI file://) et le renvoie sous forme de chaîne de caractères base64.
+ * Utile pour l'export de fichiers d'impression autonomes (HTML/PDF) ou le partage d'images.
+ */
+async function readImageAsBase64(imgSource: string | null): Promise<string | null> {
+  if (!imgSource) return null;
+  if (imgSource.startsWith('data:image') || imgSource.startsWith('blob:')) {
+    return imgSource;
+  }
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const fileResult = await Filesystem.readFile({
+        path: imgSource,
+      });
+      return `data:image/jpeg;base64,${fileResult.data}`;
+    } catch (e) {
+      console.error("Échec de la lecture de l'image locale en base64 :", e);
+      return null;
+    }
+  }
+  return imgSource;
+}
+
+/**
  * Saves a file on Web, or writes to cache & shares on APK/Capacitor native platforms.
  * @param filename The name of the file to save (e.g. 'doc.pdf', 'data.json')
  * @param data The data, either as raw base64 string (for binary like PDF) or text string (for JSON/text)
@@ -256,16 +481,64 @@ async function saveOrShareFile(
 }
 
 export default function App() {
+  const isInitialLoadFinished = useRef(false);
   // Navigation / Tab state
-  // "calculator" = Le calculateur d'embouteillage, "procedures" = Modes opératoires des machines, "pilote" = Calendrier Pilote de production
-  const [activeTab, setActiveTab] = useState<'procedures' | 'pilote'>('procedures');
+  // "calculator" = Le calculateur d'embouteillage, "procedures" = Modes opératoires des machines, "pilote" = Calendrier Pilote de production, "calcul-production" = Le calcul de production (3 points)
+  const [activeTab, setActiveTab] = useState<'procedures' | 'pilote' | 'calculator' | 'calcul-production'>('procedures');
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
+
+  // States for "Calcul production"
+  const [conveyorBottles, setConveyorBottles] = useState<number | ''>(() => {
+    const saved = localStorage.getItem('prod_calc_conveyor');
+    return saved ? (saved === '0' ? 0 : parseInt(saved, 10) || '') : '';
+  });
+  const [palletizerCartons, setPalletizerCartons] = useState<number | ''>(() => {
+    const saved = localStorage.getItem('prod_calc_palletizer');
+    return saved ? (saved === '0' ? 0 : parseInt(saved, 10) || '') : '';
+  });
+  const [palletizerMultiplier, setPalletizerMultiplier] = useState<20 | 12>(() => {
+    const saved = localStorage.getItem('prod_calc_multiplier');
+    return saved === '12' ? 12 : 20;
+  });
+  const [tracerBottles, setTracerBottles] = useState<number | ''>(() => {
+    const saved = localStorage.getItem('prod_calc_tracer');
+    return saved ? (saved === '0' ? 0 : parseInt(saved, 10) || '') : '';
+  });
+
+  // Save changes to localStorage
+  useEffect(() => {
+    localStorage.setItem('prod_calc_conveyor', conveyorBottles !== '' ? conveyorBottles.toString() : '');
+  }, [conveyorBottles]);
+
+  useEffect(() => {
+    localStorage.setItem('prod_calc_palletizer', palletizerCartons !== '' ? palletizerCartons.toString() : '');
+  }, [palletizerCartons]);
+
+  useEffect(() => {
+    localStorage.setItem('prod_calc_multiplier', palletizerMultiplier.toString());
+  }, [palletizerMultiplier]);
+
+  useEffect(() => {
+    localStorage.setItem('prod_calc_tracer', tracerBottles !== '' ? tracerBottles.toString() : '');
+  }, [tracerBottles]);
+
+  const [productionDestination, setProductionDestination] = useState<string>(() => {
+    return localStorage.getItem('prod_calc_destination') || '';
+  });
+
+  useEffect(() => {
+    localStorage.setItem('prod_calc_destination', productionDestination);
+  }, [productionDestination]);
+
+  const [savedProdCalculations, setSavedProdCalculations] = useState<ProductionCalculation[]>([]);
 
   // States for "Pilote" calendar and production recaps
   const [isHistoryExpanded, setIsHistoryExpanded] = useState<boolean>(true);
   const today = new Date();
   const [calendarYear, setCalendarYear] = useState<number>(today.getFullYear());
   const [calendarMonth, setCalendarMonth] = useState<number>(today.getMonth()); // 0-11
+  const [exportMonth, setExportMonth] = useState<number>(today.getMonth()); // 0-11 for export selection
+  const [exportYear, setExportYear] = useState<number>(today.getFullYear()); // for export selection
   const [selectedDateStr, setSelectedDateStr] = useState<string>(() => {
     const y = today.getFullYear();
     const m = String(today.getMonth() + 1).padStart(2, '0');
@@ -851,7 +1124,30 @@ export default function App() {
 
   useEffect(() => {
     db.machines.orderBy('order').toArray().then(m => {
-        setMachines(m.length > 0 ? m : PACKAGING_MACHINES);
+      if (m.length > 0) {
+        setMachines(m);
+      } else {
+        const saved = localStorage.getItem('bottle_machines_custom');
+        if (saved) {
+          try {
+            const parsed = JSON.parse(saved) as MachineProcedure[];
+            if (parsed && parsed.length > 0) {
+              const extended: MachineProcedureExtended[] = parsed.map((mach, idx) => ({
+                ...mach,
+                order: (mach as any).order !== undefined ? (mach as any).order : idx
+              }));
+              db.machines.bulkPut(extended);
+              setMachines(parsed);
+              isInitialLoadFinished.current = true;
+              return;
+            }
+          } catch (e) {
+            console.error('Failed to migrate localStorage machines to Dexie', e);
+          }
+        }
+        setMachines(PACKAGING_MACHINES);
+      }
+      isInitialLoadFinished.current = true;
     });
     db.productionRecaps.toArray().then(r => {
         const recaps: Record<string, ProductionRecap> = {};
@@ -865,6 +1161,12 @@ export default function App() {
         const steps: Record<string, number[]> = {};
         cs.forEach(item => { steps[item.machineId] = item.steps; });
         setCheckedSteps(steps);
+    });
+    db.productionCalculations.toArray().then(pc => {
+        const sorted = pc.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        setSavedProdCalculations(sorted);
+    }).catch(err => {
+        console.error("Failed to load production calculations", err);
     });
   }, []);
 
@@ -886,6 +1188,42 @@ export default function App() {
       db.productionRecaps.put(next);
       return updatedMap;
     });
+  };
+
+  const saveProductionCalculation = (finalQuantity: number) => {
+    const newCalc: ProductionCalculation = {
+      id: Math.random().toString(36).substring(2, 11),
+      timestamp: new Date().toISOString(),
+      conveyorBottles: conveyorBottles,
+      palletizerCartons: palletizerCartons,
+      palletizerMultiplier: palletizerMultiplier,
+      tracerBottles: tracerBottles,
+      destination: productionDestination.trim() || 'Sans destination',
+      finalQuantity: finalQuantity
+    };
+
+    db.productionCalculations.put(newCalc).then(() => {
+      setSavedProdCalculations(prev => [newCalc, ...prev]);
+      setShowSaveSuccess(true);
+    }).catch(err => {
+      console.error("Failed to save production calculation", err);
+    });
+  };
+
+  const deleteProductionCalculation = (id: string) => {
+    db.productionCalculations.delete(id).then(() => {
+      setSavedProdCalculations(prev => prev.filter(item => item.id !== id));
+    }).catch(err => {
+      console.error("Failed to delete production calculation", err);
+    });
+  };
+
+  const restoreProductionCalculation = (calc: ProductionCalculation) => {
+    setConveyorBottles(calc.conveyorBottles);
+    setPalletizerCartons(calc.palletizerCartons);
+    setPalletizerMultiplier(calc.palletizerMultiplier as 12 | 20);
+    setTracerBottles(calc.tracerBottles);
+    setProductionDestination(calc.destination === 'Sans destination' ? '' : calc.destination);
   };
 
   // Function to process and generate PDF locally (completely offline, APK / hybrid compatible)
@@ -1038,13 +1376,24 @@ export default function App() {
       const base64Data = event.target?.result as string;
       if (base64Data) {
         try {
-          const compressed = await compressImage(base64Data, 1000, 1000, 0.7);
+          // Compression JPEG, qualité 80% (0.8), max 1280px
+          const compressed = await compressImage(base64Data, 1280, 1280, 0.8);
           const currentForDate = productionRecaps[selectedDateStr] || { dateStr: selectedDateStr, notes: '', photos: [null, null, null] };
+          
+          // Supprimer l'ancien fichier local s'il existe pour ne pas alourdir l'espace de stockage
+          const oldPhotoPath = currentForDate.photos[slotIndex];
+          if (oldPhotoPath) {
+            await deleteLocalFilesystemImage(oldPhotoPath);
+          }
+
+          // Sauvegarder dans le système de fichiers local du mobile (ou base64 optimisé sur le web)
+          const savedPathOrBase64 = await saveImageToLocalFilesystem(compressed, selectedDateStr, slotIndex);
+
           const nextPhotos = [...currentForDate.photos];
-          nextPhotos[slotIndex] = compressed;
+          nextPhotos[slotIndex] = savedPathOrBase64;
           saveProductionRecap(selectedDateStr, { photos: nextPhotos });
         } catch (err) {
-          console.error("Compression error:", err);
+          console.error("Erreur de compression/stockage de l'image :", err);
           const currentForDate = productionRecaps[selectedDateStr] || { dateStr: selectedDateStr, notes: '', photos: [null, null, null] };
           const nextPhotos = [...currentForDate.photos];
           nextPhotos[slotIndex] = base64Data;
@@ -1062,9 +1411,15 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
-  const handleRecapImageDelete = (slotIndex: number) => {
+  const handleRecapImageDelete = async (slotIndex: number) => {
     const currentForDate = productionRecaps[selectedDateStr];
     if (!currentForDate) return;
+    
+    const oldPhotoPath = currentForDate.photos[slotIndex];
+    if (oldPhotoPath) {
+      await deleteLocalFilesystemImage(oldPhotoPath);
+    }
+
     const nextPhotos = [...currentForDate.photos];
     nextPhotos[slotIndex] = null;
     saveProductionRecap(selectedDateStr, { photos: nextPhotos });
@@ -1198,7 +1553,8 @@ export default function App() {
 
         const x = 15 + col * (photoWidth + colGap);
         const y = photosY + row * (photoHeight + rowGap);
-        const imgData = recap.photos?.[i];
+        const imgPathOrData = recap.photos?.[i];
+        const imgData = imgPathOrData ? await readImageAsBase64(imgPathOrData) : null;
 
         if (imgData) {
           try {
@@ -1263,10 +1619,18 @@ export default function App() {
 
   const handleExportPhotosHTML = async () => {
     const recap = productionRecaps[selectedDateStr];
-    const photos = recap?.photos ? recap.photos.filter((p): p is string => p !== null) : [];
-    if (photos.length === 0) {
+    const rawPhotos = recap?.photos ? recap.photos.filter((p): p is string => p !== null) : [];
+    if (rawPhotos.length === 0) {
       alert("Aucune photo disponible dans ce rapport de shift.");
       return;
+    }
+
+    const photos: string[] = [];
+    for (const p of rawPhotos) {
+      const b64 = await readImageAsBase64(p);
+      if (b64) {
+        photos.push(b64);
+      }
     }
 
     let formattedDate = selectedDateStr;
@@ -1469,6 +1833,267 @@ export default function App() {
     await saveOrShareFile(`Photos_Rapport_Shift_${selectedDateStr}.html`, htmlContent, 'text/html', false);
   };
 
+  const handleExportMonthPhotosHTML = async () => {
+    const monthPrefix = `${exportYear}-${String(exportMonth + 1).padStart(2, '0')}-`;
+    const monthlyRecaps = Object.keys(productionRecaps)
+      .filter(key => key.startsWith(monthPrefix))
+      .sort((a, b) => a.localeCompare(b))
+      .map(key => productionRecaps[key])
+      .filter(recap => {
+        const hasNotes = recap?.notes?.trim().length > 0;
+        const hasPhotos = recap?.photos?.some(p => p !== null);
+        return hasNotes || hasPhotos;
+      });
+
+    if (monthlyRecaps.length === 0) {
+      alert(`Aucun rapport de shift (avec photos ou observations) n'a été trouvé pour le mois sélectionné (${MONTH_NAMES_FR[exportMonth]} ${exportYear}).`);
+      return;
+    }
+
+    const compiledDays = [];
+    for (const recap of monthlyRecaps) {
+      const rawPhotos = recap.photos ? recap.photos.filter((p): p is string => p !== null) : [];
+      const base64Photos: string[] = [];
+      for (const p of rawPhotos) {
+        const b64 = await readImageAsBase64(p);
+        if (b64) {
+          base64Photos.push(b64);
+        }
+      }
+
+      let formattedDate = recap.dateStr;
+      try {
+        const d = new Date(recap.dateStr);
+        if (!isNaN(d.getTime())) {
+          formattedDate = d.toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      const capitalizedDate = formattedDate.charAt(0).toUpperCase() + formattedDate.slice(1);
+
+      compiledDays.push({
+        dateStr: recap.dateStr,
+        formattedDate: capitalizedDate,
+        notes: recap.notes?.trim() || "Aucune observation ou consigne n'a été saisie pour ce jour de production.",
+        photos: base64Photos,
+        exported: recap.exported
+      });
+    }
+
+    const monthLabel = `${MONTH_NAMES_FR[exportMonth]} ${exportYear}`;
+    const htmlContent = `<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rapport Mensuel de Production - ${monthLabel}</title>
+  <style>
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background-color: #f8fafc;
+      color: #0f172a;
+      margin: 0;
+      padding: 0;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    .no-print-banner {
+      background: linear-gradient(135deg, #4f46e5 0%, #312e81 100%);
+      color: #ffffff;
+      padding: 20px 24px;
+      border-radius: 16px;
+      margin-bottom: 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 4px 15px rgba(79, 70, 229, 0.15);
+    }
+    .banner-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.025em;
+    }
+    .banner-sub {
+      margin: 4px 0 0 0;
+      font-size: 13px;
+      color: #c7d2fe;
+      font-weight: 500;
+    }
+    .btn-print {
+      background-color: #ffffff;
+      color: #4f46e5;
+      border: none;
+      padding: 11px 22px;
+      font-weight: 700;
+      font-size: 13px;
+      border-radius: 10px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(255, 255, 255, 0.15);
+      transition: all 0.2s ease;
+    }
+    .btn-print:hover {
+      background-color: #f1f5f9;
+      transform: translateY(-1px);
+    }
+    .day-block {
+      background-color: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 20px;
+      padding: 24px;
+      margin-bottom: 40px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.01);
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+    .day-header {
+      border-bottom: 2px solid #e2e8f0;
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .day-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+      color: #1e1b4b;
+    }
+    .notes-section {
+      background-color: #f8fafc;
+      border-left: 4px solid #4f46e5;
+      padding: 16px;
+      border-radius: 0 12px 12px 0;
+      margin-bottom: 24px;
+    }
+    .notes-title {
+      margin: 0 0 8px 0;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+      font-weight: 800;
+    }
+    .notes-text {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.6;
+      color: #334155;
+      white-space: pre-wrap;
+    }
+    .photos-grid {
+      display: grid;
+      grid-template-cols: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .photo-item {
+      background-color: #0f172a;
+      border-radius: 12px;
+      overflow: hidden;
+      padding: 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.05);
+    }
+    .photo-item img {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+      border-radius: 8px;
+      display: block;
+    }
+    .photo-label {
+      padding: 6px 0;
+      color: #94a3b8;
+      font-size: 10px;
+      font-family: monospace;
+    }
+    @media print {
+      body {
+        background-color: #ffffff;
+      }
+      .container {
+        max-width: 100%;
+        padding: 0;
+      }
+      .no-print-banner {
+        display: none !important;
+      }
+      .day-block {
+        border: none;
+        box-shadow: none;
+        padding: 0;
+        margin-bottom: 50px;
+        page-break-after: always;
+        break-after: page;
+      }
+      .day-block:last-child {
+        page-break-after: avoid;
+        break-after: avoid;
+      }
+      .photo-item img {
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        object-fit: cover;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="no-print-banner">
+      <div>
+        <h1 class="banner-title">Rapports Mensuels de Production</h1>
+        <p class="banner-sub">Mois de ${monthLabel} — Rapport Complet</p>
+      </div>
+      <button class="btn-print" onclick="window.print()">
+        <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M6.72 13.829c-.24.03-.48.062-.72.096m.72-.096a42.415 42.415 0 0 1 10.56 0m-10.56 0L6.34 18m10.94-4.171c.24.03.48.062.72.096m-.72-.096L17.66 18m0 0 .229 1.144c.111.558-.303 1.056-.874 1.056H6.985c-.571 0-.985-.498-.874-1.056L6.34 18m11.32 0h-11.32M9 10.5h.008v.008H9V10.5Zm3 0h.008v.008H12V10.5Zm3 0h.008v.008H15V10.5Zm-9.25-3h12.5a1.25 1.25 0 0 1 1.25 1.25v3.75a1.25 1.25 0 0 1-1.25 1.25h-12.5A1.25 1.25 0 0 1 3.75 12.5V8.75A1.25 1.25 0 0 1 5 7.5ZM12 2.25c-1.913 0-3.52 1.398-3.81 3.25h7.62c-.29-1.852-1.897-3.25-3.81-3.25Z"></path>
+        </svg>
+        <span>Imprimer le document</span>
+      </button>
+    </div>
+
+    ${compiledDays.map((day) => `
+    <div class="day-block">
+      <div class="day-header">
+        <h2 class="day-title">${day.formattedDate}</h2>
+      </div>
+      <div class="notes-section">
+        <h3 class="notes-title">Observations et consignes de relève</h3>
+        <p class="notes-text">${day.notes}</p>
+      </div>
+      ${day.photos.length > 0 ? `
+      <div class="photos-grid">
+        ${day.photos.map((imgSrc, idx) => `
+        <div class="photo-item">
+          <img src="${imgSrc}" alt="Photo ${idx + 1}" />
+          <div class="photo-label">Photo ${idx + 1} - ${day.dateStr}</div>
+        </div>
+        `).join('')}
+      </div>
+      ` : `
+      <p style="font-size: 12px; color: #94a3b8; font-style: italic; margin-top: 10px;">Aucun visuel ou photo pour cette journée.</p>
+      `}
+    </div>
+    `).join('')}
+  </div>
+</body>
+</html>`;
+
+    const cleanMonthLabel = monthLabel.replace(/\s+/g, '_');
+    await saveOrShareFile(`Rapport_Mensuel_Shift_${cleanMonthLabel}.html`, htmlContent, 'text/html', false);
+  };
+
   const handleExportData = async () => {
     const data = {
       recaps: localStorage.getItem('bottle_production_recaps'),
@@ -1588,6 +2213,43 @@ export default function App() {
     return PACKAGING_MACHINES;
   });
 
+  const setAndPersistMachines = async (updated: MachineProcedure[]) => {
+    setMachines(updated);
+    localStorage.setItem('bottle_machines_custom', JSON.stringify(updated));
+    try {
+      await db.machines.clear();
+      const extended: MachineProcedureExtended[] = updated.map((m, idx) => ({
+        ...m,
+        order: (m as any).order !== undefined ? (m as any).order : idx
+      }));
+      await db.machines.bulkPut(extended);
+    } catch (e) {
+      console.error("Failed to sync machines to Dexie:", e);
+    }
+  };
+
+  // Debounced effect to ensure any and all updates to machines state are saved to Dexie and LocalStorage
+  useEffect(() => {
+    if (!isInitialLoadFinished.current) return;
+
+    localStorage.setItem('bottle_machines_custom', JSON.stringify(machines));
+
+    const timer = setTimeout(async () => {
+      try {
+        await db.machines.clear();
+        const extended: MachineProcedureExtended[] = machines.map((m, idx) => ({
+          ...m,
+          order: (m as any).order !== undefined ? (m as any).order : idx
+        }));
+        await db.machines.bulkPut(extended);
+      } catch (e) {
+        console.error("Failed to sync machines to Dexie in useEffect:", e);
+      }
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [machines]);
+
   // Troubleshooting editing state
   const [isEditingTroubles, setIsEditingTroubles] = useState<boolean>(false);
   const [editingTroublesList, setEditingTroublesList] = useState<{ issue: string; solution: string }[]>([]);
@@ -1634,11 +2296,9 @@ export default function App() {
       order: machines.length
     };
 
-    db.machines.add(newMachine).then(() => {
-        const updated = [...machines, newMachine];
-        setMachines(updated);
-        setSelectedMachineId(newId);
-    });
+    const updated = [...machines, newMachine];
+    setAndPersistMachines(updated);
+    setSelectedMachineId(newId);
     
     // Reset form states
     setIsAddingMachine(false);
@@ -1657,8 +2317,7 @@ export default function App() {
       return;
     }
     const updated = machines.filter(m => m.id !== id);
-    setMachines(updated);
-    localStorage.setItem('bottle_machines_custom', JSON.stringify(updated));
+    setAndPersistMachines(updated);
     if (selectedMachineId === id) {
       if (updated.length > 0) {
         setSelectedMachineId(updated[0].id);
@@ -1726,8 +2385,7 @@ export default function App() {
       return m;
     });
 
-    setMachines(updated);
-    localStorage.setItem('bottle_machines_custom', JSON.stringify(updated));
+    setAndPersistMachines(updated);
     setIsEditingSelectedMachine(false);
   };
 
@@ -1987,10 +2645,7 @@ export default function App() {
     // Update order
     const updated = newMachines.map((m, index) => ({ ...m, order: index } as MachineProcedureExtended));
     
-    setMachines(updated);
-    
-    // Update Dexie
-    await db.machines.bulkPut(updated);
+    await setAndPersistMachines(updated);
   };
 
   // Checklist handler
@@ -2160,10 +2815,21 @@ export default function App() {
     else if (type === 'recap' && slotIndex !== undefined) {
       setIsCompressing(true);
       try {
-        const compressed = await compressImage(base64String, 1000, 1000, 0.7);
+        // Compression JPEG, qualité 80% (0.8), max 1280px
+        const compressed = await compressImage(base64String, 1280, 1280, 0.8);
         const currentForDate = productionRecaps[selectedDateStr] || { dateStr: selectedDateStr, notes: '', photos: [null, null, null] };
+        
+        // Supprimer l'ancien fichier local s'il existe pour ne pas alourdir l'espace de stockage
+        const oldPhotoPath = currentForDate.photos[slotIndex];
+        if (oldPhotoPath) {
+          await deleteLocalFilesystemImage(oldPhotoPath);
+        }
+
+        // Sauvegarder dans le système de fichiers local du mobile (ou base64 optimisé sur le web)
+        const savedPathOrBase64 = await saveImageToLocalFilesystem(compressed, selectedDateStr, slotIndex);
+
         const nextPhotos = [...currentForDate.photos];
-        nextPhotos[slotIndex] = compressed;
+        nextPhotos[slotIndex] = savedPathOrBase64;
         saveProductionRecap(selectedDateStr, { photos: nextPhotos });
       } catch (err) {
         console.error("Camera image compression error:", err);
@@ -2402,17 +3068,35 @@ export default function App() {
                   <Calendar className="w-4 h-4" />
                   <span>Pilote Production (Calendrier)</span>
                   <span className="ml-auto flex items-center gap-1.5">
-                    <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-550/15 text-emerald-400 border border-emerald-500/20">
-                      Nouveau
-                    </span>
-                    {Object.keys(productionRecaps).length > 0 && (
-                      <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 bg-blue-500/25 text-blue-400 rounded-full">
-                        {Object.keys(productionRecaps).filter(k => {
+                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono" title="Jours de rapport sur l'année en cours">
+                      {(() => {
+                        const currentYearStr = String(new Date().getFullYear());
+                        return Object.keys(productionRecaps).filter(k => {
+                          if (!k.startsWith(currentYearStr)) return false;
                           const r = productionRecaps[k];
                           return r && (r.notes?.trim() || r.photos?.some(p => p !== null));
-                        }).length}
-                      </span>
-                    )}
+                        }).length;
+                      })()} j. ({new Date().getFullYear()})
+                    </span>
+                  </span>
+                </button>
+
+                {/* Link 4: Calcul production */}
+                <button
+                  onClick={() => {
+                    setActiveTab('calcul-production');
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all cursor-pointer ${
+                    activeTab === 'calcul-production'
+                      ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/30 font-bold'
+                      : 'text-slate-400 hover:bg-slate-850 hover:text-white'
+                  }`}
+                >
+                  <Calculator className="w-4 h-4" />
+                  <span>Calcul Production (3 points)</span>
+                  <span className="ml-auto text-[9px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-bold font-mono">
+                    Actif
                   </span>
                 </button>
 
@@ -2472,13 +3156,477 @@ export default function App() {
             </div>
           </div>
           
+          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/60 w-full md:w-auto shrink-0 shadow-2xs">
+            <button
+              onClick={() => setActiveTab('procedures')}
+              className={`flex-1 md:flex-none px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all cursor-pointer ${
+                activeTab === 'procedures'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Modes Opératoires
+            </button>
+            <button
+              onClick={() => setActiveTab('pilote')}
+              className={`flex-1 md:flex-none px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all cursor-pointer ${
+                activeTab === 'pilote'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Pilote Production
+            </button>
+            <button
+              onClick={() => setActiveTab('calcul-production')}
+              className={`flex-1 md:flex-none px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all cursor-pointer ${
+                activeTab === 'calcul-production'
+                  ? 'bg-white text-blue-600 shadow-sm'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Calcul Production
+            </button>
+          </div>
 
         </div>
       </header>
 
       {/* Main Container */}
       <AnimatePresence mode="wait">
-        {activeTab === 'calculator' ? (
+        {activeTab === 'calcul-production' ? (
+          <motion.div
+            key="calcul-production-view"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8"
+          >
+            {/* Page Title & Intro */}
+            <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2">
+                  <Calculator className="w-6 h-6 text-blue-600" />
+                  Calcul de Production
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-500 font-medium">
+                  Calculez la quantité finale à réaliser à partir des points de comptage de la ligne d'embouteillage.
+                </p>
+              </div>
+
+              {/* Quick Reset */}
+              <button
+                onClick={() => {
+                  setConveyorBottles('');
+                  setPalletizerCartons('');
+                  setPalletizerMultiplier(20);
+                  setTracerBottles('');
+                }}
+                className="self-start sm:self-center flex items-center gap-1.5 px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-50 text-xs font-bold shadow-xs cursor-pointer transition-all"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                Réinitialiser tout
+              </button>
+            </div>
+
+            {/* Interactive Visual Pipeline (The "Schéma avec 3 points différents") */}
+            <div className="bg-blue-950 rounded-3xl border border-blue-900 p-6 sm:p-8 shadow-sm mb-8">
+              <div className="text-xs font-bold text-blue-300 uppercase tracking-wider mb-6 text-center">
+                Schéma du Flux de Comptage de la Ligne
+              </div>
+
+              {/* Grid or Flex layout for the 3 points */}
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-stretch relative">
+                
+                {/* Visual pipelines/connectors on Desktop */}
+                <div className="hidden lg:block absolute top-1/2 left-[28%] w-[12%] h-0.5 border-t-2 border-dashed border-blue-800 -translate-y-1/2" />
+                <div className="hidden lg:block absolute top-1/2 left-[61%] w-[12%] h-0.5 border-t-2 border-dashed border-blue-800 -translate-y-1/2" />
+
+                {/* Point 1: Convoyeur Bouteilles */}
+                <div className="relative bg-blue-900/40 rounded-2xl border border-blue-800/60 p-5 flex flex-col justify-between hover:border-blue-500 transition-all shadow-md">
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="w-7 h-7 rounded-lg bg-blue-950 flex items-center justify-center text-blue-400 font-bold font-mono text-sm shadow-2xs">
+                        <Workflow className="w-4 h-4" />
+                      </span>
+                      <h3 className="text-sm font-extrabold text-white">1. Convoyeur Bouteilles</h3>
+                    </div>
+                    <p className="text-[11px] text-blue-200/80 mb-4 font-medium leading-relaxed">
+                      Saisissez la quantité de bouteilles individuelles en attente sur le convoyeur de la ligne.
+                    </p>
+                  </div>
+
+                  <div className="mt-2">
+                    <label className="block text-[10px] uppercase font-bold text-blue-300/80 tracking-wider mb-1.5">
+                      Quantité de Bouteilles (u)
+                    </label>
+                    <div className="relative flex items-center">
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={conveyorBottles}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setConveyorBottles(val === '' ? '' : Math.max(0, parseInt(val, 10) || 0));
+                        }}
+                        className="w-full bg-blue-950/80 border border-blue-800/80 rounded-xl px-3 py-2 text-sm font-bold font-mono text-white focus:outline-hidden focus:border-blue-500 focus:ring-2 focus:ring-blue-950/40"
+                      />
+                      <span className="absolute right-3 text-[10px] font-bold text-blue-400">btls</span>
+                    </div>
+
+                    {/* Quick Helper buttons */}
+                    <div className="flex gap-1.5 mt-2">
+                      <button
+                        onClick={() => setConveyorBottles(5450)}
+                        className="flex-1 text-[10px] font-bold py-1.5 px-1 rounded-xl bg-blue-950 hover:bg-blue-900/80 text-blue-200 transition-all cursor-pointer border border-blue-800/60 text-center"
+                      >
+                        5450 <span className="text-[9px] font-medium text-blue-400 block sm:inline sm:ml-0.5">(ref 33cl)</span>
+                      </button>
+                      <button
+                        onClick={() => setConveyorBottles(3400)}
+                        className="flex-1 text-[10px] font-bold py-1.5 px-1 rounded-xl bg-blue-950 hover:bg-blue-900/80 text-blue-200 transition-all cursor-pointer border border-blue-800/60 text-center"
+                      >
+                        3400 <span className="text-[9px] font-medium text-blue-400 block sm:inline sm:ml-0.5">(ref 75cl)</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Point 2: Palettiseur */}
+                <div className="relative bg-blue-900/40 rounded-2xl border border-blue-800/60 p-5 flex flex-col justify-between hover:border-violet-400 transition-all shadow-md">
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="w-7 h-7 rounded-lg bg-violet-950 flex items-center justify-center text-violet-400 font-bold font-mono text-sm shadow-2xs">
+                        <Boxes className="w-4 h-4" />
+                      </span>
+                      <h3 className="text-sm font-extrabold text-white">2. Palettiseur</h3>
+                    </div>
+                    <p className="text-[11px] text-blue-200/80 mb-4 font-medium leading-relaxed">
+                      Saisissez la quantité de cartons au palettiseur. Elle sera multipliée automatiquement selon le format.
+                    </p>
+                  </div>
+
+                  <div className="mt-2">
+                    <div className="grid grid-cols-2 gap-2 mb-3">
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-blue-300/80 tracking-wider mb-1">
+                          Cartons (u)
+                        </label>
+                        <input
+                          type="number"
+                          min="0"
+                          placeholder="0"
+                          value={palletizerCartons}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setPalletizerCartons(val === '' ? '' : Math.max(0, parseInt(val, 10) || 0));
+                          }}
+                          className="w-full bg-blue-950/80 border border-blue-800/80 rounded-xl px-2.5 py-2 text-sm font-bold font-mono text-white focus:outline-hidden focus:border-violet-500 focus:ring-2 focus:ring-violet-950/40"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] uppercase font-bold text-blue-300/80 tracking-wider mb-1">
+                          Facteur (btls/ctn)
+                        </label>
+                        <div className="flex bg-blue-950/80 p-0.5 rounded-xl border border-blue-800/80">
+                          {[12, 20].map((mult) => (
+                            <button
+                              key={mult}
+                              onClick={() => setPalletizerMultiplier(mult as 20 | 12)}
+                              className={`flex-1 text-[11px] font-bold py-1 rounded-lg cursor-pointer transition-all ${
+                                palletizerMultiplier === mult
+                                  ? 'bg-blue-900 text-violet-400 shadow-xs font-black'
+                                  : 'text-blue-400 hover:text-blue-200'
+                              }`}
+                            >
+                              x{mult}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Calculated Output summary */}
+                    <div className="bg-violet-950/50 rounded-xl border border-violet-900/40 p-2.5 text-center">
+                      <div className="text-[9px] uppercase font-bold text-violet-300 tracking-wider">
+                        Equivalent bouteilles
+                      </div>
+                      <div className="text-sm font-black font-mono text-violet-300">
+                        {palletizerCartons !== '' ? (palletizerCartons * palletizerMultiplier).toLocaleString() : '0'}{' '}
+                        <span className="text-[10px] font-normal text-violet-400">btls</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Point 3: Traceuse Pal. */}
+                <div className="relative bg-blue-900/40 rounded-2xl border border-blue-800/60 p-5 flex flex-col justify-between hover:border-amber-400 transition-all shadow-md">
+                  <div>
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="w-7 h-7 rounded-lg bg-amber-950 flex items-center justify-center text-amber-400 font-bold font-mono text-sm shadow-2xs">
+                        <Barcode className="w-4 h-4" />
+                      </span>
+                      <h3 className="text-sm font-extrabold text-white">3. Traceuse Pal.</h3>
+                    </div>
+                    <p className="text-[11px] text-blue-200/80 mb-4 font-medium leading-relaxed">
+                      Saisissez la quantité de bouteilles à soustraire (retraits qualité, rebuts ou rebuts de traceuse).
+                    </p>
+                  </div>
+
+                  <div className="mt-2">
+                    <label className="block text-[10px] uppercase font-bold text-blue-300/80 tracking-wider mb-1.5">
+                      Quantité Soustraite (u)
+                    </label>
+                    <div className="relative flex items-center">
+                      <input
+                        type="number"
+                        min="0"
+                        placeholder="0"
+                        value={tracerBottles}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setTracerBottles(val === '' ? '' : Math.max(0, parseInt(val, 10) || 0));
+                        }}
+                        className="w-full bg-blue-950/80 border border-blue-800/80 rounded-xl px-3 py-2 text-sm font-bold font-mono text-white focus:outline-hidden focus:border-amber-500 focus:ring-2 focus:ring-amber-950/40"
+                      />
+                      <span className="absolute right-3 text-[10px] font-bold text-blue-400">btls</span>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+
+            {/* Calculations Result and Formula Explanations */}
+            {(() => {
+              const bConveyor = typeof conveyorBottles === 'number' ? conveyorBottles : 0;
+              const bPalletizer = typeof palletizerCartons === 'number' ? palletizerCartons * palletizerMultiplier : 0;
+              const bTracer = typeof tracerBottles === 'number' ? tracerBottles : 0;
+              const lineTotal = bConveyor + bPalletizer;
+              const finalQuantity = bTracer - lineTotal;
+
+              return (
+                <div className="flex flex-col gap-6">
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-stretch">
+                    
+                    {/* Big Final Answer (7 cols) */}
+                    <div className="md:col-span-7 bg-blue-950 text-white rounded-3xl p-6 sm:p-8 flex flex-col justify-between border border-blue-900 shadow-xl relative overflow-hidden">
+                      {/* Abstract design elements to give a premium feel */}
+                      <div className="absolute top-0 right-0 w-32 h-32 bg-blue-900/40 rounded-full blur-3xl opacity-50 -mr-10 -mt-10" />
+                      
+                      <div className="relative z-10">
+                        <div className="text-[10px] uppercase font-black text-blue-400 tracking-widest mb-2 font-mono">
+                          RÉSULTAT DU COMPTAGE DE PRODUCTION
+                        </div>
+                        <h3 className="text-xl font-extrabold text-white mb-6">
+                          Quantité finale à réaliser :
+                        </h3>
+
+                        <div className="flex items-baseline gap-2 mb-2">
+                          <span className="text-4xl sm:text-5xl font-black font-mono tracking-tight text-white animate-fade-in">
+                            {finalQuantity.toLocaleString()}
+                          </span>
+                          <span className="text-blue-400 font-bold text-sm">bouteilles</span>
+                        </div>
+                      </div>
+
+                      <div className="relative z-10 mt-6 pt-6 border-t border-blue-900 flex items-center justify-between flex-wrap gap-3">
+                        <div className="text-[11px] text-blue-200 font-medium">
+                          Formule : <code className="bg-blue-900/60 font-bold font-mono px-1.5 py-0.5 rounded text-white">{`Traceuse - (Convoyeur + Palettiseur × ${palletizerMultiplier})`}</code>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Math Breakdown Details (5 cols) */}
+                    <div className="md:col-span-5 bg-blue-950 rounded-3xl border border-blue-900 p-6 flex flex-col justify-between shadow-md">
+                      <div>
+                        <h4 className="text-xs font-bold text-blue-300 uppercase tracking-wider mb-4">
+                          Détail du calcul
+                        </h4>
+
+                        <div className="flex flex-col gap-3 font-mono text-[11px]">
+                          {/* Point 3 */}
+                          <div className="flex justify-between items-center py-1.5 border-b border-blue-900/80">
+                            <span className="text-blue-200/80 font-sans font-medium flex items-center gap-1.5">
+                              <Barcode className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                              3. Traceuse Pal.
+                            </span>
+                            <span className="text-white font-bold">+{bTracer.toLocaleString()} u</span>
+                          </div>
+
+                          {/* Point 1 */}
+                          <div className="flex justify-between items-center py-1.5 border-b border-blue-900/80">
+                            <span className="text-blue-200/80 font-sans font-medium flex items-center gap-1.5">
+                              <Workflow className="w-3.5 h-3.5 text-blue-400 shrink-0" />
+                              1. Convoyeur Bouteilles
+                            </span>
+                            <span className="text-amber-400 font-bold">-{bConveyor.toLocaleString()} u</span>
+                          </div>
+
+                          {/* Point 2 */}
+                          <div className="flex flex-col py-1.5 border-b border-blue-900/80">
+                            <div className="flex justify-between items-center">
+                              <span className="text-blue-200/80 font-sans font-medium flex items-center gap-1.5">
+                                <Boxes className="w-3.5 h-3.5 text-violet-400 shrink-0" />
+                                2. Palettiseur
+                              </span>
+                              <span className="text-amber-400 font-bold">-{bPalletizer.toLocaleString()} u</span>
+                            </div>
+                            {palletizerCartons !== '' && (
+                              <span className="text-[10px] text-blue-400/80 font-sans text-right">
+                                ({palletizerCartons} cartons × {palletizerMultiplier} btls/carton)
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Intermediate Subtotal of line */}
+                          <div className="flex justify-between items-center py-1.5 border-b border-blue-900 bg-blue-900/40 px-2 py-2 rounded-xl">
+                            <span className="text-blue-200 font-sans font-bold text-[10px] uppercase">
+                              Sous-total Ligne (1 + 2)
+                            </span>
+                            <span className="text-white font-bold font-mono">-{lineTotal.toLocaleString()} u</span>
+                          </div>
+
+                          {/* Total Sum */}
+                          <div className="flex justify-between items-center pt-3 text-xs">
+                            <span className="text-blue-100 font-sans font-black uppercase">Quantité finale à réaliser</span>
+                            <span className="text-blue-400 font-black font-mono text-sm">{finalQuantity.toLocaleString()} u</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 pt-4 border-t border-blue-900 flex gap-2">
+                        <div className="p-2 bg-blue-900/50 rounded-lg text-blue-300 shrink-0">
+                          <Info className="w-4 h-4" />
+                        </div>
+                        <p className="text-[10px] text-blue-200/80 font-medium leading-relaxed">
+                          Ce calcul permet d'obtenir un état précis des volumes d'embouteillage restants. Les données saisies sont automatiquement sauvegardées pour votre prochaine visite.
+                        </p>
+                      </div>
+                    </div>
+
+                  </div>
+
+                  {/* Destination & Saving panel */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 p-5 sm:p-6 shadow-xs flex flex-col md:flex-row items-end justify-between gap-4">
+                    <div className="flex-1 w-full">
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                        <MapPin className="w-4 h-4 text-blue-600" />
+                        Lieu de destination de la production
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="Ex: Entrepôt Principal, Client Dupont, Quai de chargement Nord..."
+                        value={productionDestination}
+                        onChange={(e) => setProductionDestination(e.target.value)}
+                        className="w-full text-xs font-semibold border border-slate-200 rounded-xl px-4 py-3 bg-slate-50 hover:bg-slate-50/50 focus:bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-slate-850"
+                      />
+                    </div>
+                    <button
+                      onClick={() => saveProductionCalculation(finalQuantity)}
+                      className="w-full md:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-xl text-xs font-black shadow-xs hover:shadow-sm transition-all cursor-pointer flex items-center justify-center gap-2 shrink-0 h-[42px] uppercase tracking-wider"
+                    >
+                      <Save className="w-4 h-4" />
+                      Enregistrer ce calcul
+                    </button>
+                  </div>
+
+                  {/* Historique des calculs enregistrés */}
+                  <div className="bg-white rounded-3xl border border-slate-200/90 p-5 sm:p-6 shadow-xs">
+                    <div className="flex items-center gap-2 mb-4">
+                      <History className="w-5 h-5 text-slate-600" />
+                      <h3 className="text-xs font-black text-slate-900 uppercase tracking-wide">
+                        Historique des calculs de production enregistrés
+                      </h3>
+                      <span className="bg-slate-100 text-slate-600 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                        {savedProdCalculations.length}
+                      </span>
+                    </div>
+
+                    {savedProdCalculations.length === 0 ? (
+                      <div className="text-center py-8 text-slate-400 text-xs font-medium border-2 border-dashed border-slate-150 rounded-2xl">
+                        Aucun calcul enregistré dans l'historique pour le moment.
+                      </div>
+                    ) : (
+                      <div className="flex flex-col gap-3 max-h-[400px] overflow-y-auto pr-1">
+                        {savedProdCalculations.map((calc) => {
+                          const date = new Date(calc.timestamp);
+                          const formattedDate = date.toLocaleDateString('fr-FR', {
+                            day: '2-digit',
+                            month: '2-digit',
+                            year: 'numeric'
+                          });
+                          const formattedTime = date.toLocaleTimeString('fr-FR', {
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          });
+
+                          return (
+                            <div 
+                              key={calc.id} 
+                              className="group p-4 bg-slate-50 hover:bg-blue-50/20 border border-slate-150 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all"
+                            >
+                              <div className="flex flex-col gap-1.5">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-[10px] font-bold text-slate-400 bg-slate-200/50 px-2 py-0.5 rounded-md font-mono">
+                                    {formattedDate} à {formattedTime}
+                                  </span>
+                                  <span className="flex items-center gap-1 text-[11px] font-bold text-slate-700 bg-blue-50 border border-blue-100 px-2 py-0.5 rounded-md">
+                                    <MapPin className="w-3 h-3 text-blue-500" />
+                                    {calc.destination}
+                                  </span>
+                                </div>
+                                
+                                <div className="text-xs text-slate-500 font-medium flex items-center gap-2 flex-wrap">
+                                  <span>Convoyeur: <strong className="text-slate-700 font-bold">{calc.conveyorBottles || 0} u</strong></span>
+                                  <span className="text-slate-300">•</span>
+                                  <span>Palettiseur: <strong className="text-slate-700 font-bold">{calc.palletizerCartons || 0} ctn</strong> (x{calc.palletizerMultiplier})</span>
+                                  <span className="text-slate-300">•</span>
+                                  <span>Traceuse: <strong className="text-slate-700 font-bold">{calc.tracerBottles || 0} u</strong></span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-3 sm:self-center">
+                                <div className="text-right">
+                                  <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Quantité à réaliser</div>
+                                  <div className="text-sm font-black text-blue-600 font-mono">
+                                    {calc.finalQuantity.toLocaleString()} u
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-1.5 border-l border-slate-200 pl-3">
+                                  <button
+                                    onClick={() => restoreProductionCalculation(calc)}
+                                    className="px-2.5 py-1.5 bg-white hover:bg-blue-100 border border-slate-200 text-blue-600 rounded-lg text-[11px] font-black transition-all cursor-pointer shadow-3xs"
+                                    title="Restaurer ce calcul"
+                                  >
+                                    CHARGER
+                                  </button>
+                                  <button
+                                    onClick={() => deleteProductionCalculation(calc.id)}
+                                    className="p-1.5 bg-white hover:bg-red-50 border border-slate-200 hover:border-red-100 text-slate-400 hover:text-red-500 rounded-lg transition-all cursor-pointer shadow-3xs"
+                                    title="Supprimer de l'historique"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                </div>
+              );
+            })()}
+
+          </motion.div>
+        ) : activeTab === 'calculator' ? (
           <motion.div
             key="calculator-view"
             initial={{ opacity: 0, y: 10 }}
@@ -4294,20 +5442,18 @@ export default function App() {
                                  placeholder="Entrez des commentaires, références, consignes spécifiques..."
                                  className="w-full text-xs font-sans border border-slate-200 rounded p-1.5 bg-slate-50 hover:bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500/10 focus:border-blue-500 transition-all leading-normal text-slate-700"
                                ></textarea>
-                            </div>
-                          </div>
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  </div>)}
-
-              </div>
-
-            </div>
-          </motion.div>
+                             </div>
+                           </div>
+                         ))
+                       )}
+                     </div>
+                   </div>
+                 )}
+               </div>
+             )}
+           </div>
+         </div>
+       </motion.div>
         ) : (
           <motion.div
             key="pilote-view"
@@ -4322,22 +5468,22 @@ export default function App() {
               
               {/* Left sidebar: Monthly grid Calendar */}
               <div className="lg:col-span-5 flex flex-col gap-4">
-                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                <div className="bg-blue-950 rounded-2xl border border-blue-900 p-5 shadow-sm">
                   {/* Calendar Navigation header */}
                   <div className="flex items-center justify-between mb-5 select-none">
                     <button
                       onClick={handlePrevMonth}
-                      className="p-2 border border-slate-200 rounded-lg hover:bg-slate-100 hover:border-slate-300 text-slate-600 transition-all cursor-pointer flex items-center justify-center shrink-0"
+                      className="p-2 border border-blue-800/80 rounded-lg hover:bg-blue-900 hover:border-blue-700 text-white transition-all cursor-pointer flex items-center justify-center shrink-0"
                       title="Mois précédent"
                     >
                       <ChevronLeft className="w-4 h-4" />
                     </button>
-                    <h3 className="text-sm font-bold text-slate-800 tracking-wide font-sans capitalize">
+                    <h3 className="text-sm font-bold text-white tracking-wide font-sans capitalize">
                       {MONTH_NAMES_FR[calendarMonth]} {calendarYear}
                     </h3>
                     <button
                       onClick={handleNextMonth}
-                      className="p-2 border border-slate-200 rounded-lg hover:bg-slate-100 hover:border-slate-300 text-slate-600 transition-all cursor-pointer flex items-center justify-center shrink-0"
+                      className="p-2 border border-blue-800/80 rounded-lg hover:bg-blue-900 hover:border-blue-700 text-white transition-all cursor-pointer flex items-center justify-center shrink-0"
                       title="Mois suivant"
                     >
                       <ChevronRight className="w-4 h-4" />
@@ -4347,7 +5493,7 @@ export default function App() {
                   {/* Days of week titles */}
                   <div className="grid grid-cols-7 gap-1 mb-2">
                     {['Lun', 'Mar', 'Mer', 'Jeu', 'Ven', 'Sam', 'Dim'].map((lbl, idx) => (
-                      <div key={idx} className="text-[10px] font-bold uppercase tracking-wider text-slate-400 font-mono text-center py-1">
+                      <div key={idx} className="text-[10px] font-bold uppercase tracking-wider text-blue-300 font-mono text-center py-1">
                         {lbl}
                       </div>
                     ))}
@@ -4379,7 +5525,7 @@ export default function App() {
                         const recap = productionRecaps[dStr];
                         const photoCount = recap?.photos ? recap.photos.filter(p => p !== null).length : 0;
                         const hasNotes = recap?.notes?.trim().length > 0;
-                        const hasSavedData = photoCount > 0 || hasNotes;
+                        const hasSavedData = photoCount > 0 || hasNotes || !!recap?.exported;
 
                         cells.push(
                           <button
@@ -4387,10 +5533,10 @@ export default function App() {
                             onClick={() => setSelectedDateStr(dStr)}
                             className={`aspect-square rounded-xl text-xs font-semibold relative flex flex-col items-center justify-between p-1.5 transition-all cursor-pointer border ${
                               isSelected
-                                ? 'bg-blue-600 text-white border-blue-600 shadow-md shadow-blue-100 font-bold scale-102 z-10'
+                                ? 'bg-blue-600 text-white border-blue-500 shadow-md shadow-blue-900/40 font-bold scale-102 z-10'
                                 : isToday
-                                  ? 'bg-blue-50/60 text-blue-600 border-blue-200 hover:bg-blue-50 font-bold'
-                                  : 'bg-slate-50/50 hover:bg-slate-100 text-slate-755 border-slate-100'
+                                  ? 'bg-blue-900/60 text-blue-300 border-blue-700 hover:bg-blue-900 font-bold'
+                                  : 'bg-blue-950/40 hover:bg-blue-900/50 text-blue-100 border-blue-900/50'
                             }`}
                           >
                             <span>{d}</span>
@@ -4398,10 +5544,14 @@ export default function App() {
                             {/* Recap markers */}
                             {hasSavedData && (
                               <div className="flex items-center gap-0.5 mt-auto">
-                                <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-white' : 'bg-emerald-500'}`} />
+                                {recap?.exported ? (
+                                  <span className="text-[10px]" title="Rapport Exporté 📦">📦</span>
+                                ) : (
+                                  <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-white' : 'bg-emerald-400'}`} />
+                                )}
                                 {photoCount > 0 && (
                                   <span className={`text-[8px] font-bold font-mono px-0.5 rounded ${
-                                    isSelected ? 'text-blue-100 animate-none' : 'text-slate-500'
+                                    isSelected ? 'text-blue-100' : 'text-blue-300'
                                   }`}>
                                     {photoCount}
                                   </span>
@@ -4416,23 +5566,81 @@ export default function App() {
                   </div>
                   
                   {/* Calendar Legends */}
-                  <div className="mt-5 pt-4 border-t border-slate-150 flex flex-wrap items-center justify-between gap-3 text-[10px] text-slate-500 font-medium">
+                  <div className="mt-5 pt-4 border-t border-blue-900/60 flex flex-wrap items-center justify-between gap-3 text-[10px] text-blue-300/80 font-medium">
                     <div className="flex items-center gap-1.5">
                       <span className="w-2.5 h-2.5 rounded-md bg-blue-600 shadow-xs" />
                       <span>Date active</span>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-md bg-blue-50 border border-blue-200" />
+                      <span className="w-2.5 h-2.5 rounded-md bg-blue-900/60 border border-blue-700" />
                       <span>Aujourd'hui</span>
                     </div>
                     <div className="flex items-center gap-1.5">
                       <div className="flex items-center gap-0.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                        <span className="text-[8px] text-slate-400">📸</span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                        <span className="text-[8px] text-blue-400">📸</span>
                       </div>
                       <span>Récapitulatif enregistré</span>
                     </div>
                   </div>
+                </div>
+
+                {/* Partage de Rapport Mensuel */}
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm text-left">
+                  <div className="flex items-center gap-2 mb-2.5">
+                    <CalendarDays className="w-4 h-4 text-indigo-400" />
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">Partager un Rapport Mensuel</h3>
+                  </div>
+                  <p className="text-xs text-slate-400 leading-relaxed mb-4">
+                    Générez un document HTML autonome contenant l'intégralité des consignes de relève et toutes les photos de shift associées pour le mois et l'année de votre choix, puis partagez-le ou enregistrez-le en toute simplicité.
+                  </p>
+
+                  {/* Selectors for Month and Year */}
+                  <div className="grid grid-cols-2 gap-2.5 mb-4">
+                    <div>
+                      <label htmlFor="export-month-select" className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                        Mois à partager
+                      </label>
+                      <select
+                        id="export-month-select"
+                        value={exportMonth}
+                        onChange={(e) => setExportMonth(parseInt(e.target.value))}
+                        className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded-xl px-2.5 py-2 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none cursor-pointer"
+                      >
+                        {MONTH_NAMES_FR.map((name, index) => (
+                          <option key={index} value={index}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="export-year-select" className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                        Année
+                      </label>
+                      <select
+                        id="export-year-select"
+                        value={exportYear}
+                        onChange={(e) => setExportYear(parseInt(e.target.value))}
+                        className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded-xl px-2.5 py-2 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none cursor-pointer"
+                      >
+                        {Array.from({ length: 5 }, (_, i) => today.getFullYear() - 2 + i).map((yr) => (
+                          <option key={yr} value={yr}>
+                            {yr}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <button
+                    id="export-monthly-html-btn"
+                    onClick={handleExportMonthPhotosHTML}
+                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm shadow-indigo-950/20 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Générer & Partager {MONTH_NAMES_FR[exportMonth]} {exportYear}</span>
+                  </button>
                 </div>
 
                 {/* Historique récent */}
@@ -4548,6 +5756,18 @@ export default function App() {
 
                   {piloteSubTab === 'recap' && (
                     <>
+                      {productionRecaps[selectedDateStr]?.exported && (
+                        <div className="bg-emerald-50 border border-emerald-100 rounded-xl p-3.5 flex items-center justify-between text-emerald-800 text-xs font-semibold">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                            <span>Rapport exporté • Photos nettoyées pour libérer de l'espace</span>
+                          </div>
+                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-md text-[9px] font-bold uppercase tracking-wider">
+                            Exporté
+                          </span>
+                        </div>
+                      )}
+
                       {/* Recap report action hub */}
                       <div className="flex items-center justify-between gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-150">
                         <div className="text-xs font-bold text-slate-600 font-sans">
@@ -4599,7 +5819,7 @@ export default function App() {
                                 {image64 ? (
                                   <div className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 shadow-3xs bg-slate-950 flex items-center justify-center">
                                     <img
-                                      src={image64}
+                                      src={resolveImageSrc(image64)}
                                       alt={`Récapitulatif ${slotIndex + 1}`}
                                       className="w-full h-full object-cover select-none"
                                       referrerPolicy="no-referrer"
@@ -4679,6 +5899,12 @@ export default function App() {
                                     />
                                   </label>
                                 )}
+                                {image64 && (
+                                  <div className="flex items-center justify-between px-1 mt-1 text-[10px]">
+                                    <span className="text-slate-500 font-medium font-sans">Photo {slotIndex + 1}</span>
+                                    <PhotoSizeIndicator imageSource={image64} />
+                                  </div>
+                                )}
                               </div>
                             );
                           })}
@@ -4686,8 +5912,12 @@ export default function App() {
                       </div>
 
                       {/* Summary progress foot */}
-                      <div className="mt-2 text-[10px] text-slate-400 font-medium font-mono flex items-center justify-between bg-slate-50/80 px-4 py-2.5 rounded-xl border border-slate-100 text-left">
-                        <span>ID Relève : recaps-{selectedDateStr}</span>
+                      <div className="mt-2 text-[10px] text-slate-400 font-medium font-mono flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-50/80 px-4 py-2.5 rounded-xl border border-slate-100 text-left">
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <span>ID Relève : recaps-{selectedDateStr}</span>
+                          <span className="text-slate-300">|</span>
+                          <TotalPhotosSizeIndicator images={productionRecaps[selectedDateStr]?.photos || [null, null, null]} />
+                        </div>
                         <span className="text-slate-655 font-bold uppercase flex items-center gap-1">
                           📄 Remplissage : {
                             (() => {
@@ -4971,7 +6201,7 @@ export default function App() {
             <div className="relative flex items-center justify-center w-full h-full max-h-[75vh] mt-12 overflow-hidden touch-none">
               <motion.img
                 key={zoomImage}
-                src={zoomImage}
+                src={resolveImageSrc(zoomImage)}
                 alt={selectedMachine.name}
                 referrerPolicy="no-referrer"
                 drag

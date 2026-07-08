@@ -1,5 +1,5 @@
 import Dexie, { Table } from 'dexie';
-import { ProductionRecap, CalculationLog } from '../types';
+import { ProductionRecap, CalculationLog, ProductionCalculation } from '../types';
 import { MachineProcedure } from '../operatingProcedures';
 
 export interface MachineProcedureExtended extends MachineProcedure {
@@ -16,14 +16,16 @@ export class AppDatabase extends Dexie {
   productionRecaps!: Table<ProductionRecap, string>;
   history!: Table<CalculationLog, string>;
   checkedSteps!: Table<CheckedSteps, string>;
+  productionCalculations!: Table<ProductionCalculation, string>;
 
   constructor() {
     super('BottleProductionDB');
-    this.version(2).stores({
+    this.version(3).stores({
       machines: 'id, order',
       productionRecaps: 'dateStr',
       history: 'id',
-      checkedSteps: 'machineId'
+      checkedSteps: 'machineId',
+      productionCalculations: 'id'
     });
   }
 }
