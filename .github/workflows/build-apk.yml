@@ -27,9 +27,6 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Générer les icônes Android
-        run: npm run icons
-
       - name: Install Dependencies
         run: npm install
 
@@ -45,6 +42,9 @@ jobs:
             npx cap add android
           fi
           npx cap copy android
+
+      - name: Générer les icônes Android
+        run: npm run icons
 
       - name: Build Android Debug APK
         run: |
