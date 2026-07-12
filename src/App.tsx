@@ -10,6 +10,7 @@ import {
   History, 
   Trash2, 
   ArrowRight, 
+  ArrowLeft,
   CheckCircle, 
   ChevronRight, 
   Plus, 
@@ -55,7 +56,9 @@ import {
   Boxes,
   Barcode,
   Download,
-  CalendarDays
+  CalendarDays,
+  Timer,
+  Clock
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { Capacitor } from '@capacitor/core';
@@ -216,6 +219,10 @@ function PhotoSizeIndicator({ imageSource }: { imageSource: string | null }) {
 
     const fetchSize = async () => {
       try {
+        if (imageSource.startsWith('http://') || imageSource.startsWith('https://')) {
+          if (active) setSizeStr("Schéma d'origine");
+          return;
+        }
         let sizeInBytes = 0;
         if (imageSource.startsWith('data:image') || imageSource.startsWith('blob:')) {
           const base64DataOnly = imageSource.split(',')[1] || imageSource;
@@ -483,8 +490,8 @@ async function saveOrShareFile(
 export default function App() {
   const isInitialLoadFinished = useRef(false);
   // Navigation / Tab state
-  // "calculator" = Le calculateur d'embouteillage, "procedures" = Modes opératoires des machines, "pilote" = Calendrier Pilote de production, "calcul-production" = Le calcul de production (3 points)
-  const [activeTab, setActiveTab] = useState<'procedures' | 'pilote' | 'calculator' | 'calcul-production'>('procedures');
+  // "calculator" = Le calculateur d'embouteillage, "procedures" = Modes opératoires des machines, "pilote" = Calendrier Pilote de production, "calcul-production" = Le calcul de production (3 points), "temps-production" = Calcul du temps de production (HH/MM/SS)
+  const [activeTab, setActiveTab] = useState<'procedures' | 'pilote' | 'calculator' | 'calcul-production' | 'temps-production'>('procedures');
   const [isMenuOpen, setIsMenuOpen] = useState<boolean>(false);
 
   // States for "Calcul production"
@@ -492,6 +499,15 @@ export default function App() {
     const saved = localStorage.getItem('prod_calc_conveyor');
     return saved ? (saved === '0' ? 0 : parseInt(saved, 10) || '') : '';
   });
+  const [conveyorBottlesPresets, setConveyorBottlesPresets] = useState<{ id: string; label: string; quantity: number; formatId: string }[]>(() => {
+    const saved = localStorage.getItem('prod_calc_conveyor_presets');
+    if (saved) return JSON.parse(saved);
+    return [
+      { id: 'c1', label: 'Réf 75 cl', quantity: 3400, formatId: '75cl' },
+      { id: 'c2', label: 'Réf 33 cl', quantity: 5450, formatId: '33cl' },
+    ];
+  });
+  const [showAddConveyorPresetForm, setShowAddConveyorPresetForm] = useState<boolean>(false);
   const [palletizerCartons, setPalletizerCartons] = useState<number | ''>(() => {
     const saved = localStorage.getItem('prod_calc_palletizer');
     return saved ? (saved === '0' ? 0 : parseInt(saved, 10) || '') : '';
@@ -509,6 +525,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('prod_calc_conveyor', conveyorBottles !== '' ? conveyorBottles.toString() : '');
   }, [conveyorBottles]);
+
+  useEffect(() => {
+    localStorage.setItem('prod_calc_conveyor_presets', JSON.stringify(conveyorBottlesPresets));
+  }, [conveyorBottlesPresets]);
 
   useEffect(() => {
     localStorage.setItem('prod_calc_palletizer', palletizerCartons !== '' ? palletizerCartons.toString() : '');
@@ -530,6 +550,129 @@ export default function App() {
     localStorage.setItem('prod_calc_destination', productionDestination);
   }, [productionDestination]);
 
+  // States for "Temps de production"
+  const [timeCalcQuantity, setTimeCalcQuantity] = useState<number | ''>(() => {
+    const saved = localStorage.getItem('time_calc_quantity');
+    return saved ? (saved === '0' ? 0 : parseInt(saved, 10) || 50000) : 50000;
+  });
+  const [timeCalcSpeed, setTimeCalcSpeed] = useState<number | ''>(() => {
+    const saved = localStorage.getItem('time_calc_speed');
+    return saved ? (saved === '0' ? 0 : parseInt(saved, 10) || 15000) : 15000;
+  });
+  const [timeCalcStartTime, setTimeCalcStartTime] = useState<string>(() => {
+    const saved = localStorage.getItem('time_calc_start_time');
+    if (saved) return saved;
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  });
+  const [timeCalcEfficiency, setTimeCalcEfficiency] = useState<number>(() => {
+    const saved = localStorage.getItem('time_calc_efficiency');
+    return saved ? parseInt(saved, 10) || 100 : 100;
+  });
+  const [timeCalcUnit, setTimeCalcUnit] = useState<'bouteilles' | 'cartons' | 'palettes'>(() => {
+    return 'bouteilles';
+  });
+  const [timeCalcSpeedPresets, setTimeCalcSpeedPresets] = useState<{ id: string; label: string; speed: number; formatId: string }[]>(() => {
+    const saved = localStorage.getItem('time_calc_speed_presets');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          if (typeof parsed[0] === 'number') {
+            return parsed.map((speed, idx) => ({
+              id: `legacy-${idx}-${speed}`,
+              label: 'Cadence',
+              speed,
+              formatId: '75cl'
+            }));
+          }
+          return parsed;
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+    return [
+      { id: 's1', label: 'Cadence standard', speed: 4000, formatId: '75cl' },
+      { id: 's2', label: 'Grande cadence', speed: 8000, formatId: '75cl' },
+      { id: 's3', label: 'Haute cadence', speed: 12000, formatId: '75cl' },
+      { id: 's4', label: 'Cadence max', speed: 15000, formatId: '33cl' },
+      { id: 's5', label: 'Surcadence', speed: 18000, formatId: '33cl' },
+    ];
+  });
+  const [showAddSpeedPresetForm, setShowAddSpeedPresetForm] = useState<boolean>(false);
+  const [timeCalcQuantityPresets, setTimeCalcQuantityPresets] = useState<{ id: string; label: string; quantity: number; formatId: string }[]>(() => {
+    const saved = localStorage.getItem('time_calc_quantity_presets');
+    if (saved) return JSON.parse(saved);
+    return [
+      { id: '1', label: 'Palette complète', quantity: 600, formatId: '75cl' },
+      { id: '2', label: 'Demi-palette', quantity: 300, formatId: '75cl' },
+      { id: '3', label: 'Palette complète', quantity: 1200, formatId: '33cl' },
+      { id: '4', label: 'Demi-palette', quantity: 600, formatId: '33cl' },
+      { id: '5', label: 'Grand lot de prod.', quantity: 50000, formatId: '75cl' },
+    ];
+  });
+  const [showAddQtyPresetForm, setShowAddQtyPresetForm] = useState<boolean>(false);
+  const [timeCalcMode, setTimeCalcMode] = useState<'forward' | 'backward'>(() => {
+    const saved = localStorage.getItem('time_calc_mode');
+    return (saved as any) || 'forward';
+  });
+  const [timeCalcEndTime, setTimeCalcEndTime] = useState<string>(() => {
+    const saved = localStorage.getItem('time_calc_end_time');
+    if (saved) return saved;
+    const now = new Date();
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    return `${hh}:${mm}`;
+  });
+  const [timeCalcHistory, setTimeCalcHistory] = useState<{ id: string; label: string; quantity: number; speed: number; efficiency: number; durationSeconds: number; unit: string; date: string }[]>(() => {
+    const saved = localStorage.getItem('time_calc_history');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [timeCalcLabel, setTimeCalcLabel] = useState<string>('');
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_quantity', timeCalcQuantity !== '' ? timeCalcQuantity.toString() : '');
+  }, [timeCalcQuantity]);
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_speed', timeCalcSpeed !== '' ? timeCalcSpeed.toString() : '');
+  }, [timeCalcSpeed]);
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_start_time', timeCalcStartTime);
+  }, [timeCalcStartTime]);
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_mode', timeCalcMode);
+  }, [timeCalcMode]);
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_end_time', timeCalcEndTime);
+  }, [timeCalcEndTime]);
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_efficiency', timeCalcEfficiency.toString());
+  }, [timeCalcEfficiency]);
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_unit', timeCalcUnit);
+  }, [timeCalcUnit]);
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_speed_presets', JSON.stringify(timeCalcSpeedPresets));
+  }, [timeCalcSpeedPresets]);
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_quantity_presets', JSON.stringify(timeCalcQuantityPresets));
+  }, [timeCalcQuantityPresets]);
+
+  useEffect(() => {
+    localStorage.setItem('time_calc_history', JSON.stringify(timeCalcHistory));
+  }, [timeCalcHistory]);
+
   const [savedProdCalculations, setSavedProdCalculations] = useState<ProductionCalculation[]>([]);
 
   // States for "Pilote" calendar and production recaps
@@ -547,6 +690,152 @@ export default function App() {
   });
 
   const [piloteSubTab, setPiloteSubTab] = useState<'recap'>('recap');
+
+  // Time Production Helper Functions
+  const getProductionTimeDetails = () => {
+    const qty = Number(timeCalcQuantity) || 0;
+    const nominalSpeed = Number(timeCalcSpeed) || 0;
+    const eff = Number(timeCalcEfficiency) || 100;
+    
+    if (qty <= 0 || nominalSpeed <= 0) {
+      return {
+        durationSeconds: 0,
+        formattedDuration: "00 h 00 min 00 s",
+        formattedShort: "00:00:00",
+        actualSpeed: 0,
+        endTimeStr: "--:--",
+        endTimeDay: "",
+        startTimeStr: "--:--",
+        startTimeDay: "",
+        durationDecimal: 0
+      };
+    }
+    
+    const actualSpeed = nominalSpeed * (eff / 100);
+    const durationHours = qty / actualSpeed;
+    const durationSeconds = Math.round(durationHours * 3600);
+    
+    const hours = Math.floor(durationSeconds / 3600);
+    const minutes = Math.floor((durationSeconds % 3600) / 60);
+    const seconds = durationSeconds % 60;
+    
+    const formattedDuration = `${String(hours).padStart(2, '0')} h ${String(minutes).padStart(2, '0')} min ${String(seconds).padStart(2, '0')} s`;
+    const formattedShort = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    
+    let endTimeStr = "--:--";
+    let endTimeDay = "";
+    let startTimeStr = "--:--";
+    let startTimeDay = "";
+    
+    if (timeCalcMode === 'forward') {
+      if (timeCalcStartTime) {
+        const [startH, startM] = timeCalcStartTime.split(':').map(Number);
+        const startDateTime = new Date();
+        startDateTime.setHours(startH, startM, 0, 0);
+        
+        const endDateTime = new Date(startDateTime.getTime() + durationSeconds * 1000);
+        endTimeStr = endDateTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+        
+        const todayDate = new Date();
+        todayDate.setHours(startH, startM, 0, 0);
+        
+        const diffTime = endDateTime.getTime() - todayDate.getTime();
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        
+        if (diffDays === 0) {
+          endTimeDay = "aujourd'hui";
+        } else if (diffDays === 1) {
+          endTimeDay = "demain";
+        } else {
+          endTimeDay = `dans ${diffDays} jours (${endDateTime.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })})`;
+        }
+      }
+    } else {
+      if (timeCalcEndTime) {
+        const [endH, endM] = timeCalcEndTime.split(':').map(Number);
+        const endDateTime = new Date();
+        endDateTime.setHours(endH, endM, 0, 0);
+        
+        const startDateTime = new Date(endDateTime.getTime() - durationSeconds * 1000);
+        startTimeStr = startDateTime.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+        
+        const todayDate = new Date();
+        todayDate.setHours(endH, endM, 0, 0);
+        
+        const diffTime = todayDate.getTime() - startDateTime.getTime();
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        
+        if (diffDays === 0) {
+          startTimeDay = "aujourd'hui";
+        } else if (diffDays === 1) {
+          startTimeDay = "hier";
+        } else {
+          startTimeDay = `il y a ${diffDays} jours (${startDateTime.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })})`;
+        }
+      }
+    }
+    
+    return {
+      durationSeconds,
+      formattedDuration,
+      formattedShort,
+      actualSpeed,
+      endTimeStr,
+      endTimeDay,
+      startTimeStr,
+      startTimeDay,
+      durationDecimal: parseFloat(durationHours.toFixed(2))
+    };
+  };
+
+  const timeDetails = getProductionTimeDetails();
+
+  const handleUnitChange = (newUnit: 'bouteilles' | 'cartons' | 'palettes') => {
+    setTimeCalcUnit(newUnit);
+    if (newUnit === 'bouteilles') {
+      setTimeCalcQuantity(50000);
+      setTimeCalcSpeed(15000);
+    } else if (newUnit === 'cartons') {
+      setTimeCalcQuantity(8000);
+      setTimeCalcSpeed(1500);
+    } else if (newUnit === 'palettes') {
+      setTimeCalcQuantity(120);
+      setTimeCalcSpeed(20);
+    }
+  };
+
+  const handleSaveTimeCalculation = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!timeCalcQuantity || !timeCalcSpeed) return;
+    
+    const label = timeCalcLabel.trim() || `Calcul ${timeCalcQuantity.toLocaleString()} u @ ${timeCalcSpeed.toLocaleString()}/h`;
+    
+    const newItem = {
+      id: Math.random().toString(36).substring(2, 9),
+      label,
+      quantity: Number(timeCalcQuantity),
+      speed: Number(timeCalcSpeed),
+      efficiency: timeCalcEfficiency,
+      durationSeconds: timeDetails.durationSeconds,
+      unit: timeCalcUnit,
+      date: new Date().toISOString()
+    };
+    
+    setTimeCalcHistory([newItem, ...timeCalcHistory]);
+    setTimeCalcLabel('');
+  };
+
+  const handleLoadTimeCalculation = (item: any) => {
+    setTimeCalcQuantity(item.quantity);
+    setTimeCalcSpeed(item.speed);
+    setTimeCalcEfficiency(item.efficiency);
+    setTimeCalcUnit(item.unit || 'bouteilles');
+  };
+
+  const handleDeleteTimeCalculation = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setTimeCalcHistory(timeCalcHistory.filter(item => item.id !== id));
+  };
 
   const mopRef = useRef<HTMLDivElement>(null);
 
@@ -705,6 +994,8 @@ export default function App() {
     const activeImgUrl = selectedMachine.containerImages && selectedMachine.containerImages.length > 0
       ? (selectedMachine.containerImages.find(img => img.id === activeContainerId)?.imageUrl || selectedMachine.imageUrl)
       : selectedMachine.imageUrl;
+
+    const embeddedImgUrl = activeImgUrl ? await readImageAsBase64(activeImgUrl) : null;
 
     const currentFormatSteps = (selectedMachine.containerSteps && activeContainerId && selectedMachine.containerSteps[activeContainerId])
       ? selectedMachine.containerSteps[activeContainerId]
@@ -1037,11 +1328,11 @@ export default function App() {
         </div>
       </div>
 
-      ${activeImgUrl ? `
+      ${embeddedImgUrl ? `
       <div class="schema-section">
         <div class="schema-title">Schéma / Photo d'Illustration</div>
         <div class="schema-img-container">
-          <img src="${activeImgUrl}" alt="${selectedMachine.name}" />
+          <img src="${embeddedImgUrl}" alt="${selectedMachine.name}" />
         </div>
       </div>
       ` : ''}
@@ -2744,9 +3035,126 @@ export default function App() {
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      setIsCompressing(true);
       const reader = new FileReader();
-      reader.onloadend = () => {
+      reader.onloadend = async () => {
         const base64String = reader.result as string;
+        try {
+          // Compression JPEG, qualité 80% (0.8), max 1280px
+          const compressed = await compressImage(base64String, 1280, 1280, 0.8);
+          
+          // Find old photo to delete it
+          const machineToUpdate = machines.find(m => m.id === selectedMachineId);
+          let oldPhotoPath: string | null = null;
+          if (machineToUpdate) {
+            if (machineToUpdate.containerImages && machineToUpdate.containerImages.length > 0) {
+              oldPhotoPath = machineToUpdate.containerImages.find(img => img.id === activeContainerId)?.imageUrl || null;
+            } else {
+              oldPhotoPath = machineToUpdate.imageUrl || null;
+            }
+          }
+          if (oldPhotoPath) {
+            await deleteLocalFilesystemImage(oldPhotoPath);
+          }
+
+          // Save to local filesystem (or base64 on web)
+          const slotIndex = activeContainerId ? parseInt(activeContainerId) || 0 : 0;
+          const savedPathOrBase64 = await saveImageToLocalFilesystem(compressed, `machine_${selectedMachineId}`, slotIndex);
+
+          const updatedMachines = machines.map(m => {
+            if (m.id === selectedMachineId) {
+              if (m.containerImages && m.containerImages.length > 0) {
+                const updatedContainers = m.containerImages.map(img => {
+                  if (img.id === activeContainerId) {
+                    return { ...img, imageUrl: savedPathOrBase64 };
+                  }
+                  return img;
+                });
+                return { ...m, containerImages: updatedContainers };
+              } else {
+                return { ...m, imageUrl: savedPathOrBase64 };
+              }
+            }
+            return m;
+          });
+          setMachines(updatedMachines);
+          localStorage.setItem('bottle_machines_custom', JSON.stringify(updatedMachines));
+        } catch (err) {
+          console.error("Machine image compression error:", err);
+          const updatedMachines = machines.map(m => {
+            if (m.id === selectedMachineId) {
+              if (m.containerImages && m.containerImages.length > 0) {
+                const updatedContainers = m.containerImages.map(img => {
+                  if (img.id === activeContainerId) {
+                    return { ...img, imageUrl: base64String };
+                  }
+                  return img;
+                });
+                return { ...m, containerImages: updatedContainers };
+              } else {
+                return { ...m, imageUrl: base64String };
+              }
+            }
+            return m;
+          });
+          setMachines(updatedMachines);
+          localStorage.setItem('bottle_machines_custom', JSON.stringify(updatedMachines));
+        } finally {
+          setIsCompressing(false);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const handleCameraCapture = async (base64String: string) => {
+    if (!cameraActiveTarget) return;
+    const { type, id, slotIndex } = cameraActiveTarget;
+    
+    if (type === 'machine') {
+      setIsCompressing(true);
+      try {
+        // Compression JPEG, qualité 80% (0.8), max 1280px
+        const compressed = await compressImage(base64String, 1280, 1280, 0.8);
+        
+        // Find old photo to delete it
+        const machineToUpdate = machines.find(m => m.id === selectedMachineId);
+        let oldPhotoPath: string | null = null;
+        if (machineToUpdate) {
+          if (machineToUpdate.containerImages && machineToUpdate.containerImages.length > 0) {
+            oldPhotoPath = machineToUpdate.containerImages.find(img => img.id === activeContainerId)?.imageUrl || null;
+          } else {
+            oldPhotoPath = machineToUpdate.imageUrl || null;
+          }
+        }
+        if (oldPhotoPath) {
+          await deleteLocalFilesystemImage(oldPhotoPath);
+        }
+
+        // Save to local filesystem (or base64 on web)
+        const activeSlotIndex = activeContainerId ? parseInt(activeContainerId) || 0 : 0;
+        const savedPathOrBase64 = await saveImageToLocalFilesystem(compressed, `machine_${selectedMachineId}`, activeSlotIndex);
+
+        const updatedMachines = machines.map(m => {
+          if (m.id === selectedMachineId) {
+            if (m.containerImages && m.containerImages.length > 0) {
+              const updatedContainers = m.containerImages.map(img => {
+                if (img.id === activeContainerId) {
+                  return { ...img, imageUrl: savedPathOrBase64 };
+                }
+                return img;
+              });
+              return { ...m, containerImages: updatedContainers };
+            } else {
+              return { ...m, imageUrl: savedPathOrBase64 };
+            }
+          }
+          return m;
+        });
+        setMachines(updatedMachines);
+        localStorage.setItem('bottle_machines_custom', JSON.stringify(updatedMachines));
+      } catch (err) {
+        console.error("Machine camera image compression error:", err);
         const updatedMachines = machines.map(m => {
           if (m.id === selectedMachineId) {
             if (m.containerImages && m.containerImages.length > 0) {
@@ -2765,34 +3173,9 @@ export default function App() {
         });
         setMachines(updatedMachines);
         localStorage.setItem('bottle_machines_custom', JSON.stringify(updatedMachines));
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleCameraCapture = async (base64String: string) => {
-    if (!cameraActiveTarget) return;
-    const { type, id, slotIndex } = cameraActiveTarget;
-    
-    if (type === 'machine') {
-      const updatedMachines = machines.map(m => {
-        if (m.id === selectedMachineId) {
-          if (m.containerImages && m.containerImages.length > 0) {
-            const updatedContainers = m.containerImages.map(img => {
-              if (img.id === activeContainerId) {
-                return { ...img, imageUrl: base64String };
-              }
-              return img;
-            });
-            return { ...m, containerImages: updatedContainers };
-          } else {
-            return { ...m, imageUrl: base64String };
-          }
-        }
-        return m;
-      });
-      setMachines(updatedMachines);
-      localStorage.setItem('bottle_machines_custom', JSON.stringify(updatedMachines));
+      } finally {
+        setIsCompressing(false);
+      }
     }
     
     else if (type === 'supply' && id) {
@@ -2976,6 +3359,11 @@ export default function App() {
 
   const selectedMachine = machines.find(m => m.id === selectedMachineId) || machines[0];
 
+  const mopActiveImgUrl = selectedMachine?.containerImages && selectedMachine.containerImages.length > 0
+    ? (selectedMachine.containerImages.find(img => img.id === activeContainerId)?.imageUrl || selectedMachine.imageUrl)
+    : selectedMachine?.imageUrl;
+  const mopHasPhoto = !!mopActiveImgUrl;
+
   // Map generic icon strings to Lucide Components
   const getMachineIcon = (iconName: string, className: string = "w-5 h-5") => {
     switch (iconName) {
@@ -3100,6 +3488,25 @@ export default function App() {
                   </span>
                 </button>
 
+                {/* Link 5: Calcul Temps Production */}
+                <button
+                  onClick={() => {
+                    setActiveTab('temps-production');
+                    setIsMenuOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-xs font-semibold tracking-wide transition-all cursor-pointer ${
+                    activeTab === 'temps-production'
+                      ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/30 font-bold'
+                      : 'text-slate-400 hover:bg-slate-850 hover:text-white'
+                  }`}
+                >
+                  <Timer className="w-4 h-4" />
+                  <span>Calcul Temps de Production</span>
+                  <span className="ml-auto text-[9px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 font-bold font-mono">
+                    Nouveau
+                  </span>
+                </button>
+
                 {/* Technical stats container inside drawer */}
                 <div className="mt-8 pt-8 border-t border-slate-800 flex flex-col gap-4">
                   <span className="text-[10px] uppercase font-bold text-slate-500 tracking-widest px-3">Statut Système</span>
@@ -3151,42 +3558,43 @@ export default function App() {
                 Pilote et mode opératoire
               </h1>
               <p className="text-[10.5px] sm:text-xs text-slate-500 font-medium truncate">
-                Pilote et mode opératoire
+                {activeTab === 'procedures' && 'Modes Opératoires Machines'}
+                {activeTab === 'pilote' && 'Pilote de Production'}
+                {activeTab === 'calcul-production' && 'Calcul de Production'}
+                {activeTab === 'temps-production' && 'Calcul de Temps de Production'}
               </p>
             </div>
           </div>
           
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200/60 w-full md:w-auto shrink-0 shadow-2xs">
-            <button
-              onClick={() => setActiveTab('procedures')}
-              className={`flex-1 md:flex-none px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all cursor-pointer ${
-                activeTab === 'procedures'
-                  ? 'bg-white text-blue-600 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Modes Opératoires
-            </button>
-            <button
-              onClick={() => setActiveTab('pilote')}
-              className={`flex-1 md:flex-none px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all cursor-pointer ${
-                activeTab === 'pilote'
-                  ? 'bg-white text-blue-600 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Pilote Production
-            </button>
-            <button
-              onClick={() => setActiveTab('calcul-production')}
-              className={`flex-1 md:flex-none px-3.5 py-1.5 rounded-lg text-xs font-bold tracking-wide transition-all cursor-pointer ${
-                activeTab === 'calcul-production'
-                  ? 'bg-white text-blue-600 shadow-sm'
-                  : 'text-slate-500 hover:text-slate-800'
-              }`}
-            >
-              Calcul Production
-            </button>
+          <div className="flex items-center gap-2.5 px-3.5 py-2 bg-slate-100 border border-slate-200/60 rounded-2xl shadow-3xs shrink-0 self-stretch md:self-auto justify-center md:justify-start">
+            <span className="w-2 h-2 rounded-full bg-blue-600 animate-pulse shrink-0" />
+            <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider shrink-0">Onglet Actif :</span>
+            <span className="text-xs font-black text-slate-800 flex items-center gap-1.5">
+              {activeTab === 'procedures' && (
+                <>
+                  <BookOpen className="w-4 h-4 text-blue-600" />
+                  <span>Modes Opératoires</span>
+                </>
+              )}
+              {activeTab === 'pilote' && (
+                <>
+                  <Calendar className="w-4 h-4 text-blue-600" />
+                  <span>Pilote Production</span>
+                </>
+              )}
+              {activeTab === 'calcul-production' && (
+                <>
+                  <Calculator className="w-4 h-4 text-blue-600" />
+                  <span>Calcul Production</span>
+                </>
+              )}
+              {activeTab === 'temps-production' && (
+                <>
+                  <Timer className="w-4 h-4 text-blue-600" />
+                  <span>Calcul Temps</span>
+                </>
+              )}
+            </span>
           </div>
 
         </div>
@@ -3276,20 +3684,137 @@ export default function App() {
                       <span className="absolute right-3 text-[10px] font-bold text-blue-400">btls</span>
                     </div>
 
-                    {/* Quick Helper buttons */}
-                    <div className="flex gap-1.5 mt-2">
-                      <button
-                        onClick={() => setConveyorBottles(5450)}
-                        className="flex-1 text-[10px] font-bold py-1.5 px-1 rounded-xl bg-blue-950 hover:bg-blue-900/80 text-blue-200 transition-all cursor-pointer border border-blue-800/60 text-center"
-                      >
-                        5450 <span className="text-[9px] font-medium text-blue-400 block sm:inline sm:ml-0.5">(ref 33cl)</span>
-                      </button>
-                      <button
-                        onClick={() => setConveyorBottles(3400)}
-                        className="flex-1 text-[10px] font-bold py-1.5 px-1 rounded-xl bg-blue-950 hover:bg-blue-900/80 text-blue-200 transition-all cursor-pointer border border-blue-800/60 text-center"
-                      >
-                        3400 <span className="text-[9px] font-medium text-blue-400 block sm:inline sm:ml-0.5">(ref 75cl)</span>
-                      </button>
+                    {/* Configurable Conveyor Presets */}
+                    <div className="flex flex-col gap-2 mt-3 pt-3 border-t border-blue-800/40">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[9px] uppercase font-bold text-blue-300/85 tracking-wider">Présélections par Format</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowAddConveyorPresetForm(!showAddConveyorPresetForm)}
+                          className="px-1.5 py-0.5 text-[9px] font-bold text-blue-300 hover:text-white hover:bg-blue-800/60 rounded-md transition-all cursor-pointer flex items-center gap-0.5 border border-blue-800/55"
+                        >
+                          {showAddConveyorPresetForm ? (
+                            <>
+                              <span>Fermer</span>
+                              <ChevronUp className="w-2.5 h-2.5" />
+                            </>
+                          ) : (
+                            <>
+                              <span>Gérer</span>
+                              <ChevronDown className="w-2.5 h-2.5" />
+                            </>
+                          )}
+                        </button>
+                      </div>
+
+                      {conveyorBottlesPresets.length === 0 ? (
+                        <div className="text-[9px] text-blue-200/60 italic">
+                          Aucune présélection. Utilisez le bouton "Gérer" pour en ajouter.
+                        </div>
+                      ) : (
+                        <div className="flex gap-1 flex-wrap items-center">
+                          {conveyorBottlesPresets.map((preset) => (
+                            <div key={preset.id} className="flex items-center bg-blue-950/80 border border-blue-800 text-blue-200 rounded-lg overflow-hidden text-[10px] font-semibold hover:border-blue-500 transition-all shadow-3xs">
+                              <button
+                                type="button"
+                                onClick={() => setConveyorBottles(preset.quantity)}
+                                className={`px-2 py-1 cursor-pointer transition-all flex items-center gap-1 ${
+                                  conveyorBottles === preset.quantity ? 'bg-blue-600 text-white font-bold' : 'hover:bg-blue-900/60'
+                                }`}
+                                title={`Appliquer la quantité: ${preset.quantity.toLocaleString()} btls`}
+                              >
+                                <span className={`px-1 py-0.5 rounded text-[7px] font-black uppercase tracking-wider ${
+                                  conveyorBottles === preset.quantity 
+                                    ? 'bg-blue-700 text-white' 
+                                    : 'bg-blue-900/80 text-blue-300'
+                                }`}>
+                                  {preset.formatId === '75cl' ? '75cl' : preset.formatId === '33cl' ? '33cl' : 'Perso'}
+                                </span>
+                                <span>{preset.label} : <strong className="font-mono">{preset.quantity.toLocaleString()}</strong></span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setConveyorBottlesPresets(conveyorBottlesPresets.filter((p) => p.id !== preset.id));
+                                }}
+                                className="p-1 text-blue-400 hover:text-red-400 bg-blue-900/20 border-l border-blue-800/60 hover:bg-red-950/40 cursor-pointer transition-all h-full flex items-center justify-center self-stretch"
+                                title="Supprimer cette présélection"
+                              >
+                                <span className="text-[10px] font-bold leading-none select-none">×</span>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Add Custom Conveyor Preset Form */}
+                      {showAddConveyorPresetForm && (
+                        <div className="mt-2 p-2.5 bg-blue-950/95 rounded-xl border border-blue-850 flex flex-col gap-2">
+                          <div className="grid grid-cols-2 gap-1.5">
+                            <div>
+                              <label className="block text-[8px] uppercase font-bold text-blue-300/80 tracking-wider mb-0.5">Libellé</label>
+                              <input
+                                type="text"
+                                id="new-conveyor-preset-label"
+                                placeholder="Ex: Palette"
+                                className="w-full h-7 px-1.5 bg-blue-900/40 border border-blue-800 rounded-md text-[10px] font-medium text-white placeholder-blue-300/30 focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
+                              />
+                            </div>
+                            <div>
+                              <label className="block text-[8px] uppercase font-bold text-blue-300/80 tracking-wider mb-0.5">Format</label>
+                              <select
+                                id="new-conveyor-preset-format"
+                                className="w-full h-7 px-1 bg-blue-900/40 border border-blue-800 rounded-md text-[10px] font-medium text-white focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500 outline-none cursor-pointer"
+                                defaultValue="75cl"
+                              >
+                                <option value="75cl" className="bg-blue-950 text-white text-[10px]">Format 75 cl</option>
+                                <option value="33cl" className="bg-blue-950 text-white text-[10px]">Format 33 cl</option>
+                                <option value="custom" className="bg-blue-950 text-white text-[10px]">Spécifique</option>
+                              </select>
+                            </div>
+                          </div>
+                          <div className="flex gap-1.5 items-end">
+                            <div className="flex-1">
+                              <label className="block text-[8px] uppercase font-bold text-blue-300/80 tracking-wider mb-0.5">Quantité (u)</label>
+                              <input
+                                type="number"
+                                id="new-conveyor-preset-val"
+                                placeholder="Ex: 3400"
+                                defaultValue={conveyorBottles || ''}
+                                className="w-full h-7 px-1.5 bg-blue-900/40 border border-blue-800 rounded-md text-[10px] font-mono font-bold text-white placeholder-blue-300/30 focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const labelEl = document.getElementById('new-conveyor-preset-label') as HTMLInputElement;
+                                const formatEl = document.getElementById('new-conveyor-preset-format') as HTMLSelectElement;
+                                const valEl = document.getElementById('new-conveyor-preset-val') as HTMLInputElement;
+
+                                const label = labelEl?.value.trim() || 'Réf standard';
+                                const formatId = formatEl?.value || '75cl';
+                                const quantity = parseInt(valEl?.value || '0', 10);
+
+                                if (quantity >= 0) {
+                                  const newPreset = {
+                                    id: Date.now().toString(),
+                                    label,
+                                    quantity,
+                                    formatId
+                                  };
+                                  setConveyorBottlesPresets(prev => [...prev, newPreset]);
+                                  if (labelEl) labelEl.value = '';
+                                  if (valEl) valEl.value = '';
+                                }
+                              }}
+                              className="px-2 h-7 bg-blue-600 hover:bg-blue-700 text-white font-bold text-[10px] rounded-md transition-all cursor-pointer flex items-center justify-center gap-0.5 shadow-3xs hover:shadow-2xs active:scale-95 shrink-0"
+                            >
+                              <Plus className="w-2.5 h-2.5" />
+                              <span>Enregistrer</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -3625,6 +4150,684 @@ export default function App() {
               );
             })()}
 
+          </motion.div>
+        ) : activeTab === 'temps-production' ? (
+          <motion.div
+            key="temps-production-view"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.2 }}
+            className="flex-1 w-full max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 font-sans"
+          >
+            {/* Page Title & Intro */}
+            <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-xl sm:text-2xl font-extrabold tracking-tight text-slate-900 flex items-center gap-2">
+                  <Timer className="w-6 h-6 text-blue-600 animate-pulse" />
+                  Calcul Temps de Production
+                </h2>
+                <p className="text-xs sm:text-sm text-slate-500 font-medium">
+                  Estimez la durée d'un lot de conditionnement et planifiez l'heure de fin par rapport à la cadence de production et l'efficience.
+                </p>
+              </div>
+            </div>
+
+            {/* Main grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8 items-start">
+              
+              {/* Left Column: Form Parameters */}
+              <div className="lg:col-span-6 flex flex-col gap-6 sm:gap-8">
+                
+                <div className="bg-white rounded-3xl border border-slate-200/80 p-5 sm:p-6 shadow-2xs">
+                  {/* STEP 1: Quantity Input */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="flex items-center justify-center w-6 h-6 bg-blue-100 text-blue-700 font-bold text-xs rounded-lg font-mono">01</span>
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Quantité de lot</h3>
+                  </div>
+
+                  <div className="flex flex-col gap-3">
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="1"
+                        value={timeCalcQuantity}
+                        onChange={(e) => setTimeCalcQuantity(e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value, 10)))}
+                        className="w-full h-11 pl-4 pr-16 bg-slate-50 border border-slate-250 rounded-xl text-slate-800 font-bold font-mono focus:bg-white focus:ring-2 focus:ring-blue-500/25 focus:border-blue-600 transition-all outline-none"
+                        placeholder="Ex: 50000"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-400 uppercase tracking-wider">
+                        bte
+                      </span>
+                    </div>
+
+                    {/* Configurable Quantity Presets */}
+                    <div className="flex flex-col gap-2 mt-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Présélections (Raccourcis par Format)</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowAddQtyPresetForm(!showAddQtyPresetForm)}
+                          className="px-2 py-1 text-[10px] font-bold text-blue-600 hover:text-blue-700 hover:bg-blue-50/50 rounded-md transition-all cursor-pointer flex items-center gap-1 border border-blue-200/40"
+                        >
+                          {showAddQtyPresetForm ? (
+                            <>
+                              <span>Fermer la configuration</span>
+                              <ChevronUp className="w-3 h-3" />
+                            </>
+                          ) : (
+                            <>
+                              <span>Configurer / Gérer</span>
+                              <ChevronDown className="w-3 h-3" />
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      
+                      {timeCalcQuantityPresets.length === 0 ? (
+                        <div className="text-[10px] text-slate-450 italic">
+                          Aucune présélection enregistrée. Utilisez le bouton "Configurer" pour en ajouter.
+                        </div>
+                      ) : (
+                        <div className="flex gap-2 flex-wrap items-center">
+                          {timeCalcQuantityPresets.map((preset) => (
+                            <div key={preset.id} className="flex items-center bg-white border border-slate-200 text-slate-650 rounded-lg overflow-hidden text-xs font-semibold hover:border-blue-300 transition-all shadow-3xs">
+                              <button
+                                type="button"
+                                onClick={() => setTimeCalcQuantity(preset.quantity)}
+                                className={`px-2.5 py-1.5 cursor-pointer transition-all flex items-center gap-1.5 ${
+                                  timeCalcQuantity === preset.quantity ? 'bg-blue-600 text-white font-bold' : 'hover:bg-slate-50'
+                                }`}
+                                title={`Appliquer la quantité: ${preset.quantity.toLocaleString()} bouteilles`}
+                              >
+                                <span className={`px-1 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
+                                  timeCalcQuantity === preset.quantity 
+                                    ? 'bg-blue-700 text-white' 
+                                    : 'bg-slate-100 text-slate-500'
+                                }`}>
+                                  {preset.formatId === '75cl' ? '75cl' : preset.formatId === '33cl' ? '33cl' : 'Perso'}
+                                </span>
+                                <span>{preset.label} : <strong className="font-mono">{preset.quantity.toLocaleString()} bte</strong></span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTimeCalcQuantityPresets(timeCalcQuantityPresets.filter((p) => p.id !== preset.id));
+                                }}
+                                className="p-1.5 text-slate-400 hover:text-red-500 bg-slate-50 border-l border-slate-100 hover:bg-red-50 cursor-pointer transition-all h-full flex items-center justify-center self-stretch"
+                                title="Supprimer cette présélection"
+                              >
+                                <span className="text-xs font-bold leading-none select-none">×</span>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Add Custom Quantity Preset Form */}
+                      {showAddQtyPresetForm && (
+                        <div className="mt-2.5 p-3 bg-slate-50 rounded-xl border border-slate-200/60 flex flex-col sm:flex-row gap-2 items-end sm:items-center">
+                          <div className="flex-1 w-full">
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-1">Réf / Libellé</label>
+                            <input
+                              type="text"
+                              id="new-qty-preset-label"
+                              placeholder="Ex: Palette complète"
+                              className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
+                            />
+                          </div>
+                          <div className="w-full sm:w-28">
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-1">Format de bouteille</label>
+                            <select
+                              id="new-qty-preset-format"
+                              className="w-full h-8 px-2 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500 outline-none cursor-pointer"
+                              defaultValue="75cl"
+                            >
+                              <option value="75cl">Format 75 cl</option>
+                              <option value="33cl">Format 33 cl</option>
+                              <option value="custom">Spécifique</option>
+                            </select>
+                          </div>
+                          <div className="w-full sm:w-32">
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-1">Quantité (bte)</label>
+                            <input
+                              type="number"
+                              id="new-qty-preset-val"
+                              placeholder="Ex: 600"
+                              defaultValue={timeCalcQuantity || ''}
+                              className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const labelEl = document.getElementById('new-qty-preset-label') as HTMLInputElement;
+                              const formatEl = document.getElementById('new-qty-preset-format') as HTMLSelectElement;
+                              const valEl = document.getElementById('new-qty-preset-val') as HTMLInputElement;
+
+                              const label = labelEl?.value.trim() || 'Réf standard';
+                              const formatId = formatEl?.value || '75cl';
+                              const quantity = parseInt(valEl?.value || '0', 10);
+
+                              if (quantity > 0) {
+                                const newPreset = {
+                                  id: Date.now().toString(),
+                                  label,
+                                  quantity,
+                                  formatId
+                                };
+                                setTimeCalcQuantityPresets(prev => [...prev, newPreset]);
+                                if (labelEl) labelEl.value = '';
+                                if (valEl) valEl.value = '';
+                              }
+                            }}
+                            className="w-full sm:w-auto px-3.5 h-8 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 shadow-3xs hover:shadow-2xs active:scale-95"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Enregistrer</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <hr className="border-slate-100 my-4" />
+
+                  {/* STEP 2: Cadence / Speed Input */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="flex items-center justify-center w-6 h-6 bg-blue-100 text-blue-700 font-bold text-xs rounded-lg font-mono">02</span>
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Cadence nominale</h3>
+                  </div>
+
+                  <div className="flex flex-col gap-3">
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min="1"
+                        value={timeCalcSpeed}
+                        onChange={(e) => setTimeCalcSpeed(e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value, 10)))}
+                        className="w-full h-11 pl-4 pr-16 bg-slate-50 border border-slate-250 rounded-xl text-slate-800 font-bold font-mono focus:bg-white focus:ring-2 focus:ring-blue-500/25 focus:border-blue-600 transition-all outline-none"
+                        placeholder="Ex: 15000"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-black text-slate-400 uppercase tracking-wider">
+                        bte/h
+                      </span>
+                    </div>
+
+                    {/* Configurable Cadence Presets */}
+                    <div className="flex flex-col gap-2 mt-1">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] uppercase font-bold text-slate-400 tracking-wider">Présélections (Raccourcis par Format)</span>
+                        <button
+                          type="button"
+                          onClick={() => setShowAddSpeedPresetForm(!showAddSpeedPresetForm)}
+                          className="px-2 py-1 text-[10px] font-bold text-blue-600 hover:text-blue-700 hover:bg-blue-50/50 rounded-md transition-all cursor-pointer flex items-center gap-1 border border-blue-200/40"
+                        >
+                          {showAddSpeedPresetForm ? (
+                            <>
+                              <span>Fermer la configuration</span>
+                              <ChevronUp className="w-3 h-3" />
+                            </>
+                          ) : (
+                            <>
+                              <span>Configurer / Gérer</span>
+                              <ChevronDown className="w-3 h-3" />
+                            </>
+                          )}
+                        </button>
+                      </div>
+                      
+                      {timeCalcSpeedPresets.length === 0 ? (
+                        <div className="text-[10px] text-slate-450 italic">
+                          Aucun raccourci enregistré. Utilisez le bouton "Configurer" pour en ajouter.
+                        </div>
+                      ) : (
+                        <div className="flex gap-2 flex-wrap items-center">
+                          {timeCalcSpeedPresets.map((preset) => (
+                            <div key={preset.id} className="flex items-center bg-white border border-slate-200 text-slate-650 rounded-lg overflow-hidden text-xs font-semibold hover:border-blue-300 transition-all shadow-3xs">
+                              <button
+                                type="button"
+                                onClick={() => setTimeCalcSpeed(preset.speed)}
+                                className={`px-2.5 py-1.5 cursor-pointer transition-all flex items-center gap-1.5 ${
+                                  timeCalcSpeed === preset.speed ? 'bg-blue-600 text-white font-bold' : 'hover:bg-slate-50'
+                                }`}
+                                title={`Appliquer la cadence: ${preset.speed.toLocaleString()} bte/h`}
+                              >
+                                <span className={`px-1 py-0.5 rounded text-[9px] font-black uppercase tracking-wider ${
+                                  timeCalcSpeed === preset.speed 
+                                    ? 'bg-blue-700 text-white' 
+                                    : 'bg-slate-100 text-slate-500'
+                                }`}>
+                                  {preset.formatId === '75cl' ? '75cl' : preset.formatId === '33cl' ? '33cl' : 'Perso'}
+                                </span>
+                                <span>{preset.label} : <strong className="font-mono">{preset.speed.toLocaleString()} bte/h</strong></span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setTimeCalcSpeedPresets(timeCalcSpeedPresets.filter((p) => p.id !== preset.id));
+                                }}
+                                className="p-1.5 text-slate-400 hover:text-red-500 bg-slate-50 border-l border-slate-100 hover:bg-red-50 cursor-pointer transition-all h-full flex items-center justify-center self-stretch"
+                                title="Supprimer ce raccourci"
+                              >
+                                <span className="text-xs font-bold leading-none select-none">×</span>
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Add Custom Speed Preset Form */}
+                      {showAddSpeedPresetForm && (
+                        <div className="mt-2.5 p-3 bg-slate-50 rounded-xl border border-slate-200/60 flex flex-col sm:flex-row gap-2 items-end sm:items-center">
+                          <div className="flex-1 w-full">
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-1">Réf / Libellé</label>
+                            <input
+                              type="text"
+                              id="new-speed-preset-label"
+                              placeholder="Ex: Cadence standard"
+                              className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
+                            />
+                          </div>
+                          <div className="w-full sm:w-28">
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-1">Format de bouteille</label>
+                            <select
+                              id="new-speed-preset-format"
+                              className="w-full h-8 px-2 bg-white border border-slate-200 rounded-lg text-xs font-medium focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500 outline-none cursor-pointer"
+                              defaultValue="75cl"
+                            >
+                              <option value="75cl">Format 75 cl</option>
+                              <option value="33cl">Format 33 cl</option>
+                              <option value="custom">Spécifique</option>
+                            </select>
+                          </div>
+                          <div className="w-full sm:w-32">
+                            <label className="block text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-1">Cadence (bte/h)</label>
+                            <input
+                              type="number"
+                              id="new-speed-preset-val"
+                              placeholder="Ex: 12000"
+                              defaultValue={timeCalcSpeed || ''}
+                              className="w-full h-8 px-2.5 bg-white border border-slate-200 rounded-lg text-xs font-mono font-bold focus:ring-1 focus:ring-blue-500/20 focus:border-blue-500 outline-none"
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const labelEl = document.getElementById('new-speed-preset-label') as HTMLInputElement;
+                              const formatEl = document.getElementById('new-speed-preset-format') as HTMLSelectElement;
+                              const valEl = document.getElementById('new-speed-preset-val') as HTMLInputElement;
+
+                              const label = labelEl?.value.trim() || 'Cadence';
+                              const formatId = formatEl?.value || '75cl';
+                              const speed = parseInt(valEl?.value || '0', 10);
+
+                              if (speed > 0) {
+                                const newPreset = {
+                                  id: Date.now().toString(),
+                                  label,
+                                  speed,
+                                  formatId
+                                };
+                                setTimeCalcSpeedPresets(prev => [...prev, newPreset]);
+                                if (labelEl) labelEl.value = '';
+                                if (valEl) valEl.value = '';
+                              }
+                            }}
+                            className="w-full sm:w-auto px-3.5 h-8 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 shadow-3xs hover:shadow-2xs active:scale-95"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Enregistrer</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <hr className="border-slate-100 my-4" />
+
+                  {/* STEP 3: Efficiency / Rendement */}
+                  <div className="flex items-center justify-between gap-2 mb-3">
+                    <div className="flex items-center gap-2">
+                      <span className="flex items-center justify-center w-6 h-6 bg-blue-100 text-blue-700 font-bold text-xs rounded-lg font-mono">03</span>
+                      <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Efficience (Rendement)</h3>
+                    </div>
+                    <span className="text-xs font-black text-blue-600 font-mono bg-blue-50 px-2 py-0.5 rounded-md">
+                      {timeCalcEfficiency} %
+                    </span>
+                  </div>
+
+                  <p className="text-[10.5px] text-slate-500 font-medium mb-3 leading-relaxed">
+                    Précisez l'efficience estimée de la ligne (nettoyages, micro-arrêts, chargement de consommables).
+                  </p>
+
+                  <div className="flex flex-col gap-3.5">
+                    <input
+                      type="range"
+                      min="50"
+                      max="100"
+                      step="5"
+                      value={timeCalcEfficiency}
+                      onChange={(e) => setTimeCalcEfficiency(parseInt(e.target.value, 10))}
+                      className="w-full accent-blue-600 cursor-pointer h-2 bg-slate-100 rounded-lg"
+                    />
+
+                    {/* Efficiency Presets */}
+                    <div className="flex gap-1.5 flex-wrap">
+                      {[100, 95, 90, 85, 80, 70].map((eff) => (
+                        <button
+                          key={eff}
+                          type="button"
+                          onClick={() => setTimeCalcEfficiency(eff)}
+                          className={`px-2.5 py-1 text-xs font-bold rounded-lg border cursor-pointer transition-all ${
+                            timeCalcEfficiency === eff
+                              ? 'bg-blue-600 text-white border-blue-600 shadow-3xs'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                          }`}
+                        >
+                          {eff}% {eff === 100 ? '(Idéal)' : eff === 85 ? '(Moyen)' : ''}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <hr className="border-slate-100 my-4" />
+
+                  {/* STEP 4: Calculation Direction Selector */}
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="flex items-center justify-center w-6 h-6 bg-blue-100 text-blue-700 font-bold text-xs rounded-lg font-mono">04</span>
+                    <h3 className="text-xs font-bold text-slate-800 uppercase tracking-widest">Sens du Calcul</h3>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2.5 p-1 bg-slate-100 rounded-2xl border border-slate-200/50 mb-5">
+                    <button
+                      type="button"
+                      onClick={() => setTimeCalcMode('forward')}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold tracking-wide cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
+                        timeCalcMode === 'forward'
+                          ? 'bg-white text-blue-600 shadow-xs'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <ArrowRight className="w-3.5 h-3.5" />
+                      Début → Fin
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTimeCalcMode('backward')}
+                      className={`py-2 px-3 rounded-xl text-xs font-bold tracking-wide cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
+                        timeCalcMode === 'backward'
+                          ? 'bg-white text-blue-600 shadow-xs'
+                          : 'text-slate-500 hover:text-slate-800'
+                      }`}
+                    >
+                      <ArrowLeft className="w-3.5 h-3.5" />
+                      Fin → Début
+                    </button>
+                  </div>
+
+                  {/* Dynamic inputs based on mode */}
+                  {timeCalcMode === 'forward' ? (
+                    <>
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="flex items-center justify-center w-5 h-5 bg-blue-50 text-blue-600 font-bold text-[10px] rounded-lg font-mono">A</span>
+                        <h4 className="text-xs font-bold text-slate-700">Heure de début de production</h4>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <div className="relative flex-1">
+                          <input
+                            type="time"
+                            value={timeCalcStartTime}
+                            onChange={(e) => setTimeCalcStartTime(e.target.value)}
+                            className="w-full h-11 px-4 bg-slate-50 border border-slate-250 rounded-xl text-slate-800 font-bold font-mono focus:bg-white focus:ring-2 focus:ring-blue-500/25 focus:border-blue-600 transition-all outline-none"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const now = new Date();
+                            const hh = String(now.getHours()).padStart(2, '0');
+                            const mm = String(now.getMinutes()).padStart(2, '0');
+                            setTimeCalcStartTime(`${hh}:${mm}`);
+                          }}
+                          className="h-11 px-4 border border-blue-200 hover:border-blue-300 text-blue-600 bg-blue-50/30 hover:bg-blue-50 hover:scale-101 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Clock className="w-4 h-4" />
+                          <span>Heure Actuelle</span>
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center gap-2 mb-3">
+                        <span className="flex items-center justify-center w-5 h-5 bg-blue-50 text-blue-600 font-bold text-[10px] rounded-lg font-mono">B</span>
+                        <h4 className="text-xs font-bold text-slate-700">Heure de fin souhaitée (Cible)</h4>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row gap-3">
+                        <div className="relative flex-1">
+                          <input
+                            type="time"
+                            value={timeCalcEndTime}
+                            onChange={(e) => setTimeCalcEndTime(e.target.value)}
+                            className="w-full h-11 px-4 bg-slate-50 border border-slate-250 rounded-xl text-slate-800 font-bold font-mono focus:bg-white focus:ring-2 focus:ring-blue-500/25 focus:border-blue-600 transition-all outline-none"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const now = new Date();
+                            const hh = String(now.getHours()).padStart(2, '0');
+                            const mm = String(now.getMinutes()).padStart(2, '0');
+                            setTimeCalcEndTime(`${hh}:${mm}`);
+                          }}
+                          className="h-11 px-4 border border-blue-200 hover:border-blue-300 text-blue-600 bg-blue-50/30 hover:bg-blue-50 hover:scale-101 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Clock className="w-4 h-4" />
+                          <span>Heure Actuelle</span>
+                        </button>
+                      </div>
+                    </>
+                  )}
+
+                </div>
+
+              </div>
+
+              {/* Right Column: Display Results & History */}
+              <div className="lg:col-span-6 flex flex-col gap-6 sm:gap-8">
+                
+                {/* BIG RESULTS CARD */}
+                <div className="bg-gradient-to-br from-slate-900 to-slate-850 rounded-3xl p-6 sm:p-7 text-white shadow-xl border border-slate-800 flex flex-col gap-5 relative overflow-hidden">
+                  
+                  {/* Absolute background decoration */}
+                  <div className="absolute right-0 top-0 w-32 h-32 bg-blue-600/15 rounded-full blur-2xl pointer-events-none" />
+                  
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 bg-slate-800/85 px-2.5 py-1 rounded-full border border-slate-700/50 font-mono">
+                      Calculateur de temps
+                    </span>
+                    <div className="flex items-center gap-1 text-emerald-400 font-mono text-xs font-bold bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-0.5 rounded-lg">
+                      <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                      Actif
+                    </div>
+                  </div>
+
+                  {/* Giant calculated duration display */}
+                  <div className="flex flex-col gap-1.5 my-1">
+                    <span className="text-[10px] text-slate-400 font-black uppercase tracking-widest">Durée de Production Estimée</span>
+                    <div className="text-2xl sm:text-3xl font-black text-blue-400 font-mono tracking-tight my-1 break-words">
+                      {timeDetails.formattedDuration}
+                    </div>
+                    <div className="text-[11px] text-slate-400 font-medium flex items-center gap-2 flex-wrap">
+                      <span>Décimal: <strong className="text-white font-mono">{timeDetails.durationDecimal} h</strong></span>
+                      <span className="text-slate-600">•</span>
+                      <span>Format court: <strong className="text-white font-mono">{timeDetails.formattedShort}</strong></span>
+                    </div>
+                  </div>
+
+                  <hr className="border-slate-800/60" />
+
+                  {/* Production Rates summary */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="bg-slate-950/40 border border-slate-800/80 p-3 rounded-2xl">
+                      <div className="text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-1">Cadence Ajustée ({timeCalcEfficiency}%)</div>
+                      <div className="text-sm font-black font-mono text-white">
+                        {timeDetails.actualSpeed.toLocaleString()}{' '}
+                        <span className="text-[9px] text-slate-400 font-bold uppercase">
+                          bte/h
+                        </span>
+                      </div>
+                    </div>
+                    <div className="bg-slate-950/40 border border-slate-800/80 p-3 rounded-2xl">
+                      <div className="text-[9px] uppercase font-bold text-slate-400 tracking-wider mb-1">Lot à Réaliser</div>
+                      <div className="text-sm font-black font-mono text-white">
+                        {Number(timeCalcQuantity).toLocaleString()}{' '}
+                        <span className="text-[9px] text-slate-400 font-bold uppercase">
+                          bte
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ESTIMATED START OR END TIME BIG BADGE */}
+                  {Number(timeCalcQuantity) > 0 && Number(timeCalcSpeed) > 0 && (
+                    <div className="bg-blue-600/20 border border-blue-500/30 p-4 rounded-2xl flex items-center gap-4 shadow-inner">
+                      <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shrink-0 shadow-lg shadow-blue-500/25">
+                        <Clock className="w-5 h-5 animate-pulse" />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <span className="text-[9px] uppercase font-bold tracking-wider text-slate-300">
+                          {timeCalcMode === 'forward' ? "Heure de Fin Estimée" : "Heure de Début Estimée"}
+                        </span>
+                        <div className="text-base font-black text-white flex items-baseline gap-1.5 flex-wrap">
+                          <span className="text-lg font-mono font-black">
+                            {timeCalcMode === 'forward' ? timeDetails.endTimeStr : timeDetails.startTimeStr}
+                          </span>
+                          <span className="text-xs text-blue-400 font-black">
+                            ({timeCalcMode === 'forward' ? timeDetails.endTimeDay : timeDetails.startTimeDay})
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Save Calculation Section Inside Results */}
+                  <form onSubmit={handleSaveTimeCalculation} className="mt-2 pt-4 border-t border-slate-800/60">
+                    <div className="flex flex-col gap-2.5">
+                      <label className="text-[10.5px] font-bold text-slate-400 uppercase tracking-wide">
+                        Enregistrer ce calcul dans l'historique
+                      </label>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={timeCalcLabel}
+                          onChange={(e) => setTimeCalcLabel(e.target.value)}
+                          placeholder="Nom ex: Lot Prestige 75cl"
+                          className="flex-1 h-9 px-3 bg-slate-950/60 border border-slate-800 hover:border-slate-700 focus:border-blue-500 focus:bg-slate-900 rounded-xl text-xs text-white placeholder-slate-500 outline-none transition-all font-sans font-medium"
+                        />
+                        <button
+                          type="submit"
+                          disabled={!timeCalcQuantity || !timeCalcSpeed}
+                          className="px-4 h-9 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:hover:bg-blue-600 text-xs font-bold text-white rounded-xl shadow-xs transition-all flex items-center gap-1.5 shrink-0 cursor-pointer border-none"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          <span>Sauver</span>
+                        </button>
+                      </div>
+                    </div>
+                  </form>
+
+                </div>
+
+                {/* HISTORY SECTION */}
+                <div className="bg-white rounded-3xl border border-slate-200/90 p-5 sm:p-6 shadow-2xs">
+                  <div className="flex items-center gap-2 mb-4">
+                    <History className="w-5 h-5 text-slate-600" />
+                    <h3 className="text-xs font-black text-slate-900 uppercase tracking-wide">
+                      Historique des calculs de temps
+                    </h3>
+                    <span className="bg-slate-100 text-slate-600 text-[10px] font-bold px-2 py-0.5 rounded-full font-mono">
+                      {timeCalcHistory.length}
+                    </span>
+                  </div>
+
+                  {timeCalcHistory.length === 0 ? (
+                    <div className="text-center py-8 text-slate-400 text-xs font-medium border-2 border-dashed border-slate-150 rounded-2xl">
+                      Aucun calcul de temps enregistré dans l'historique.
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-3 max-h-[300px] overflow-y-auto pr-1">
+                      {timeCalcHistory.map((item) => {
+                        const dateObj = new Date(item.date);
+                        const dateFormatted = dateObj.toLocaleDateString('fr-FR', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          year: 'numeric'
+                        });
+                        const timeFormatted = dateObj.toLocaleTimeString('fr-FR', {
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        });
+
+                        const h = Math.floor(item.durationSeconds / 3600);
+                        const m = Math.floor((item.durationSeconds % 3600) / 60);
+                        const durStr = `${h} h ${m} min`;
+
+                        return (
+                          <div
+                            key={item.id}
+                            className="group p-3 bg-slate-50 hover:bg-blue-50/20 border border-slate-150 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition-all"
+                          >
+                            <div className="flex flex-col gap-1">
+                              <div className="text-xs font-bold text-slate-850">
+                                {item.label}
+                              </div>
+                              <div className="text-[10px] font-medium text-slate-500 font-mono flex items-center gap-1.5 flex-wrap">
+                                <span className="font-semibold text-slate-700">{item.quantity.toLocaleString()} bte</span>
+                                <span className="text-slate-300">•</span>
+                                <span>{item.speed.toLocaleString()}/h ({item.efficiency}%)</span>
+                                <span className="text-slate-300">•</span>
+                                <span className="text-slate-400">{dateFormatted} {timeFormatted}</span>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
+                              <div className="text-right">
+                                <span className="text-[9px] uppercase font-bold text-slate-400 tracking-wider block">Durée</span>
+                                <span className="text-xs font-black text-blue-600 font-mono">{durStr}</span>
+                              </div>
+                              <div className="flex items-center gap-1 pl-2 border-l border-slate-200">
+                                <button
+                                  type="button"
+                                  onClick={() => handleLoadTimeCalculation(item)}
+                                  className="px-2 py-1 bg-white hover:bg-blue-50 border border-slate-200 text-blue-600 rounded-lg text-[10px] font-bold transition-all cursor-pointer"
+                                  title="Restaurer ces paramètres"
+                                >
+                                  CHARGER
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleDeleteTimeCalculation(item.id, e)}
+                                  className="p-1 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-md transition-all cursor-pointer border-none bg-transparent"
+                                  title="Supprimer"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                </div>
+
+              </div>
+
+            </div>
           </motion.div>
         ) : activeTab === 'calculator' ? (
           <motion.div
@@ -4943,7 +6146,7 @@ export default function App() {
                       <div className="flex flex-col gap-2">
                     <p className="text-xs text-slate-500 font-bold uppercase tracking-wider">Schéma ou Photo de la machine</p>
                     
-                    <div className="bg-slate-50/50 border border-slate-150 p-4 rounded-xl flex flex-col gap-3">
+                    <div className={`bg-slate-50/50 border border-slate-150 rounded-xl flex flex-col transition-all ${mopHasPhoto ? 'p-4 gap-3' : 'p-2.5 gap-2.5'}`}>
                       {/* Container types format dropdown selector if available */}
                       {selectedMachine.containerImages && selectedMachine.containerImages.length > 0 && (
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 bg-slate-100 rounded-xl border border-slate-200 shadow-3xs">
@@ -5018,14 +6221,27 @@ export default function App() {
 
                       {/* Render selected image */}
                       {(() => {
+                        if (isCompressing) {
+                          return (
+                            <div className="border border-slate-150 rounded-lg h-[200px] flex flex-col items-center justify-center bg-slate-50 text-slate-400 p-4 text-center">
+                              <Loader2 className="w-6 h-6 text-blue-500 animate-spin mb-1.5" />
+                              <span className="text-[11px] font-bold text-blue-600">Optimisation...</span>
+                              <span className="text-[9px] text-slate-400 font-medium uppercase font-mono tracking-wider mt-0.5">Compression photo</span>
+                            </div>
+                          );
+                        }
+
                         const activeImgUrl = selectedMachine.containerImages && selectedMachine.containerImages.length > 0
                           ? (selectedMachine.containerImages.find(img => img.id === activeContainerId)?.imageUrl || selectedMachine.imageUrl)
                           : selectedMachine.imageUrl;
 
                         return activeImgUrl ? (
                           <div className="relative group overflow-hidden rounded-lg border border-slate-200 bg-white h-[200px] flex items-center justify-center transition-all shadow-3xs cursor-pointer">
+                            <div className="absolute top-2.5 right-2.5 z-10">
+                              <PhotoSizeIndicator imageSource={activeImgUrl} />
+                            </div>
                             <img
-                              src={activeImgUrl}
+                              src={resolveImageSrc(activeImgUrl)}
                               alt={selectedMachine.name}
                               referrerPolicy="no-referrer"
                               className="h-full w-full object-contain transition-transform duration-300 group-hover:scale-102 p-2"
@@ -5043,13 +6259,13 @@ export default function App() {
                             </div>
                           </div>
                         ) : (
-                          <div className="border border-dashed border-slate-200 rounded-lg h-[200px] flex flex-col items-center justify-center bg-white text-slate-400 p-4 text-center">
-                            <span className="text-xs leading-normal text-slate-400 font-medium">Aucun schéma</span>
-                            <div className="flex gap-2 mt-2.5">
+                          <div className="border border-dashed border-slate-200 rounded-lg h-[100px] flex flex-col items-center justify-center bg-white text-slate-400 p-3 text-center transition-all">
+                            <span className="text-xs font-semibold text-slate-450">Aucune photo pour ce format</span>
+                            <div className="flex gap-2 mt-2">
                               <button
                                 type="button"
                                 onClick={() => setCameraActiveTarget({ type: 'machine' })}
-                                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 hover:scale-101 border-none text-xs font-bold text-white rounded-lg cursor-pointer shadow-3xs transition-all inline-flex items-center gap-1.5"
+                                className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-xs font-bold text-white rounded-lg cursor-pointer shadow-3xs transition-all inline-flex items-center gap-1.5"
                               >
                                 <Camera className="w-3.5 h-3.5" />
                                 <span>Prendre photo</span>
@@ -5358,16 +6574,6 @@ export default function App() {
                        </div>
                        
                        <div className="flex gap-2 shrink-0">
-                         <button
-                           type="button"
-                           onClick={resetSuppliesToDefault}
-                           className="px-3 py-1.5 border border-slate-200 text-slate-500 hover:text-slate-700 hover:bg-slate-50 rounded-lg text-xs font-semibold cursor-pointer transition-all inline-flex items-center gap-1.5 shadow-3xs animate-fade-in"
-                           title="Restaurer la liste d'usine initiale des fournitures"
-                         >
-                           <RotateCcw className="w-3.5 h-3.5" />
-                           Configuration Usine
-                         </button>
-
                          <button
                            type="button"
                            onClick={addSupplyItem}
