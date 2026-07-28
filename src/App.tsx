@@ -58,7 +58,10 @@ import {
   Download,
   CalendarDays,
   Timer,
-  Clock
+  Clock,
+  Copy,
+  Edit3,
+  Check
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { Capacitor } from '@capacitor/core';
@@ -357,6 +360,23 @@ function resolveImageSrc(imgSource: string | null): string {
     return Capacitor.convertFileSrc(imgSource);
   }
   return imgSource;
+}
+
+/**
+ * Charge une image base64 et retourne ses dimensions réelles.
+ * Utile pour adapter l'affichage et conserver le bon ratio d'aspect.
+ */
+function getImageDimensions(base64Data: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      resolve({ width: img.naturalWidth, height: img.naturalHeight });
+    };
+    img.onerror = () => {
+      resolve({ width: 0, height: 0 });
+    };
+    img.src = base64Data;
+  });
 }
 
 /**
@@ -677,6 +697,7 @@ export default function App() {
 
   // States for "Pilote" calendar and production recaps
   const [isHistoryExpanded, setIsHistoryExpanded] = useState<boolean>(true);
+  const [isMonthlyExportExpanded, setIsMonthlyExportExpanded] = useState<boolean>(false);
   const today = new Date();
   const [calendarYear, setCalendarYear] = useState<number>(today.getFullYear());
   const [calendarMonth, setCalendarMonth] = useState<number>(today.getMonth()); // 0-11
@@ -1720,6 +1741,30 @@ export default function App() {
     saveProductionRecap(selectedDateStr, { notes: text });
   };
 
+  const handleIncrementPhotoSlots = () => {
+    const currentRecap = productionRecaps[selectedDateStr] || { dateStr: selectedDateStr, notes: '', photos: [null, null, null] };
+    const nextPhotos = [...(currentRecap.photos || [null, null, null]), null];
+    saveProductionRecap(selectedDateStr, { photos: nextPhotos });
+  };
+
+  const handleDecrementPhotoSlots = async () => {
+    const currentRecap = productionRecaps[selectedDateStr] || { dateStr: selectedDateStr, notes: '', photos: [null, null, null] };
+    const currentPhotos = currentRecap.photos || [null, null, null];
+    if (currentPhotos.length <= 1) {
+      alert("Il faut au moins 1 emplacement photo.");
+      return;
+    }
+    const lastIndex = currentPhotos.length - 1;
+    const lastPhoto = currentPhotos[lastIndex];
+    if (lastPhoto) {
+      const confirmDelete = window.confirm("Le dernier emplacement contient une photo. Voulez-vous vraiment le supprimer et effacer cette photo ?");
+      if (!confirmDelete) return;
+      await deleteLocalFilesystemImage(lastPhoto);
+    }
+    const nextPhotos = currentPhotos.slice(0, -1);
+    saveProductionRecap(selectedDateStr, { photos: nextPhotos });
+  };
+
   const handleExportPDF = async () => {
     const recap = productionRecaps[selectedDateStr] || { dateStr: selectedDateStr, notes: '', photos: [null, null, null] };
     
@@ -1830,7 +1875,7 @@ export default function App() {
       doc.setFont("helvetica", "bold");
       doc.setFontSize(11);
       doc.setTextColor(30, 41, 59);
-      doc.text("RÉCAPITULATIFS VISUELS (GRAND CONFIGURATION)", 15, 22);
+      doc.text("RÉCAPITULATIFS VISUELS", 15, 22);
 
       const photosY = 28;
       const photoWidth = 82;
@@ -1838,9 +1883,12 @@ export default function App() {
       const rowGap = 15;
       const colGap = 16;
 
-      for (let i = 0; i < 3; i++) {
-        const row = i === 2 ? 1 : 0;
-        const col = i === 2 ? 0 : i;
+      let currentPhotoIndexInPage = 0;
+      let currentPhotoPage = 2;
+
+      const drawPhotoFrame = async (i: number, isLast: boolean) => {
+        const row = Math.floor(currentPhotoIndexInPage / 2);
+        const col = currentPhotoIndexInPage % 2;
 
         const x = 15 + col * (photoWidth + colGap);
         const y = photosY + row * (photoHeight + rowGap);
@@ -1853,8 +1901,29 @@ export default function App() {
             doc.setDrawColor(203, 213, 225); // slate-300
             doc.rect(x - 0.5, y - 0.5, photoWidth + 1, photoHeight + 7, 'S');
 
-            // Draw image
-            doc.addImage(imgData, 'JPEG', x, y, photoWidth, photoHeight);
+            // Calculate dimensions keeping aspect ratio (not cropped, entière)
+            const dims = await getImageDimensions(imgData);
+            let drawW = photoWidth;
+            let drawH = photoHeight;
+            let drawX = x;
+            let drawY = y;
+
+            if (dims.width > 0 && dims.height > 0) {
+              const ratio = dims.width / dims.height;
+              const boxRatio = photoWidth / photoHeight;
+              if (ratio > boxRatio) {
+                drawW = photoWidth;
+                drawH = photoWidth / ratio;
+                drawY = y + (photoHeight - drawH) / 2;
+              } else {
+                drawH = photoHeight;
+                drawW = photoHeight * ratio;
+                drawX = x + (photoWidth - drawW) / 2;
+              }
+            }
+
+            // Draw image fully inside the bounding box
+            doc.addImage(imgData, 'JPEG', drawX, drawY, drawW, drawH);
             
             // Draw a footer background inside the frame for labels
             doc.setFillColor(241, 245, 249);
@@ -1863,7 +1932,7 @@ export default function App() {
             doc.setFont("helvetica", "bold");
             doc.setFontSize(7.5);
             doc.setTextColor(71, 85, 105);
-            doc.text(`PHOTO DU RÉCAPITULATIF RELEVÉ ${i + 1}`, x + 16, y + photoHeight + 4.2);
+            doc.text(`PHOTO DU RÉCAPITULATIF RELEVÉ ${i + 1}`, x + 12, y + photoHeight + 4.2);
           } catch (e) {
             console.error("Failed to add image to PDF:", e);
             // Draw fallback block
@@ -1890,6 +1959,33 @@ export default function App() {
           doc.text("Aucun visuel enregistré", x + 24, y + 38);
           doc.text(`Emplacement Photo ${i + 1}`, x + 23, y + 45);
         }
+
+        currentPhotoIndexInPage++;
+        // If we filled 4 slots and there are more photos, add a page
+        if (currentPhotoIndexInPage === 4 && !isLast) {
+          doc.addPage();
+          currentPhotoPage++;
+          activePage = currentPhotoPage;
+          currentPhotoIndexInPage = 0;
+          
+          // New page header
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(8);
+          doc.setTextColor(148, 163, 184);
+          doc.text("RAPPORT DE PRODUCTION DU " + capitalizedDate.toUpperCase() + " - ANNEXES PHOTO", 15, 12);
+          doc.setDrawColor(241, 245, 249);
+          doc.line(15, 14, 195, 14);
+
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(11);
+          doc.setTextColor(30, 41, 59);
+          doc.text("RÉCAPITULATIFS VISUELS (SUITE)", 15, 22);
+        }
+      };
+
+      for (let i = 0; i < recap.photos.length; i++) {
+        const isLast = i === recap.photos.length - 1;
+        await drawPhotoFrame(i, isLast);
       }
     }
 
@@ -2297,8 +2393,8 @@ export default function App() {
     }
     .photo-item img {
       width: 100%;
-      aspect-ratio: 16 / 9;
-      object-fit: cover;
+      height: auto;
+      object-fit: contain;
       border-radius: 8px;
       display: block;
     }
@@ -2684,6 +2780,10 @@ export default function App() {
   const [zoomImage, setZoomImage] = useState<string | null>(null);
   const [zoomScale, setZoomScale] = useState<number>(1);
   const [zoomRotation, setZoomRotation] = useState<number>(0);
+  const [showObservationModal, setShowObservationModal] = useState<boolean>(false);
+  const [observationModalMode, setObservationModalMode] = useState<'view' | 'edit'>('view');
+  const [observationFontSize, setObservationFontSize] = useState<number>(14);
+  const [copiedObservationToast, setCopiedObservationToast] = useState<boolean>(false);
   const [confirmDelete, setConfirmDelete] = useState<{ isOpen: boolean; action: () => void; title: string; message: string }>({ isOpen: false, action: () => {}, title: '', message: '' });
 
   // States and handlers for multi-touch pinch to zoom
@@ -3532,7 +3632,7 @@ export default function App() {
 
               {/* Drawer Footer Information */}
               <div className="p-4 border-t border-slate-800 bg-slate-950/30 text-center text-[10px] text-slate-500 font-mono">
-                Code Pilote v1.4 • Hors-ligne actif
+                Code Pilote v2.0 • Hors-ligne actif
               </div>
             </motion.div>
           </>
@@ -6736,7 +6836,11 @@ export default function App() {
                         cells.push(
                           <button
                             key={`day-${d}`}
-                            onClick={() => setSelectedDateStr(dStr)}
+                            onClick={() => {
+                              setSelectedDateStr(dStr);
+                              setShowObservationModal(true);
+                              setObservationModalMode('view');
+                            }}
                             className={`aspect-square rounded-xl text-xs font-semibold relative flex flex-col items-center justify-between p-1.5 transition-all cursor-pointer border ${
                               isSelected
                                 ? 'bg-blue-600 text-white border-blue-500 shadow-md shadow-blue-900/40 font-bold scale-102 z-10'
@@ -6792,61 +6896,74 @@ export default function App() {
                 </div>
 
                 {/* Partage de Rapport Mensuel */}
-                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-sm text-left">
-                  <div className="flex items-center gap-2 mb-2.5">
-                    <CalendarDays className="w-4 h-4 text-indigo-400" />
-                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">Partager un Rapport Mensuel</h3>
-                  </div>
-                  <p className="text-xs text-slate-400 leading-relaxed mb-4">
-                    Générez un document HTML autonome contenant l'intégralité des consignes de relève et toutes les photos de shift associées pour le mois et l'année de votre choix, puis partagez-le ou enregistrez-le en toute simplicité.
-                  </p>
-
-                  {/* Selectors for Month and Year */}
-                  <div className="grid grid-cols-2 gap-2.5 mb-4">
-                    <div>
-                      <label htmlFor="export-month-select" className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                        Mois à partager
-                      </label>
-                      <select
-                        id="export-month-select"
-                        value={exportMonth}
-                        onChange={(e) => setExportMonth(parseInt(e.target.value))}
-                        className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded-xl px-2.5 py-2 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none cursor-pointer"
-                      >
-                        {MONTH_NAMES_FR.map((name, index) => (
-                          <option key={index} value={index}>
-                            {name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div>
-                      <label htmlFor="export-year-select" className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                        Année
-                      </label>
-                      <select
-                        id="export-year-select"
-                        value={exportYear}
-                        onChange={(e) => setExportYear(parseInt(e.target.value))}
-                        className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded-xl px-2.5 py-2 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none cursor-pointer"
-                      >
-                        {Array.from({ length: 5 }, (_, i) => today.getFullYear() - 2 + i).map((yr) => (
-                          <option key={yr} value={yr}>
-                            {yr}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <button
-                    id="export-monthly-html-btn"
-                    onClick={handleExportMonthPhotosHTML}
-                    className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm shadow-indigo-950/20 cursor-pointer"
+                <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm text-left">
+                  <div
+                    className="flex items-center justify-between cursor-pointer select-none"
+                    onClick={() => setIsMonthlyExportExpanded(!isMonthlyExportExpanded)}
                   >
-                    <Download className="w-3.5 h-3.5" />
-                    <span>Générer & Partager {MONTH_NAMES_FR[exportMonth]} {exportYear}</span>
-                  </button>
+                    <div className="flex items-center gap-2">
+                      <CalendarDays className="w-4 h-4 text-indigo-400" />
+                      <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                        Partager un Rapport Mensuel
+                      </h3>
+                    </div>
+                    {isMonthlyExportExpanded ? (
+                      <ChevronUp className="w-4 h-4 text-slate-400" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-slate-400" />
+                    )}
+                  </div>
+
+                  {isMonthlyExportExpanded && (
+                    <div className="mt-3 pt-3 border-t border-slate-800/80">
+                      {/* Selectors for Month and Year */}
+                      <div className="grid grid-cols-2 gap-2.5 mb-4">
+                        <div>
+                          <label htmlFor="export-month-select" className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                            Mois à partager
+                          </label>
+                          <select
+                            id="export-month-select"
+                            value={exportMonth}
+                            onChange={(e) => setExportMonth(parseInt(e.target.value))}
+                            className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded-xl px-2.5 py-2 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none cursor-pointer"
+                          >
+                            {MONTH_NAMES_FR.map((name, index) => (
+                              <option key={index} value={index}>
+                                {name}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div>
+                          <label htmlFor="export-year-select" className="block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1">
+                            Année
+                          </label>
+                          <select
+                            id="export-year-select"
+                            value={exportYear}
+                            onChange={(e) => setExportYear(parseInt(e.target.value))}
+                            className="w-full bg-slate-800 border border-slate-700 text-slate-200 text-xs rounded-xl px-2.5 py-2 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 outline-none cursor-pointer"
+                          >
+                            {Array.from({ length: 25 }, (_, i) => 2026 + i).map((yr) => (
+                              <option key={yr} value={yr}>
+                                {yr}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      <button
+                        id="export-monthly-html-btn"
+                        onClick={handleExportMonthPhotosHTML}
+                        className="w-full py-2.5 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-2 shadow-sm shadow-indigo-950/20 cursor-pointer"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>Générer & Partager {MONTH_NAMES_FR[exportMonth]} {exportYear}</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Historique récent */}
@@ -6883,7 +7000,11 @@ export default function App() {
                           .map((dStr) => (
                             <button
                               key={dStr}
-                              onClick={() => setSelectedDateStr(dStr)}
+                              onClick={() => {
+                                setSelectedDateStr(dStr);
+                                setShowObservationModal(true);
+                                setObservationModalMode('view');
+                              }}
                               className="flex w-full items-center justify-between text-xs p-3 rounded-lg border border-slate-100 hover:bg-slate-50 text-slate-700 hover:text-blue-600 transition-colors"
                             >
                               <span className="font-mono font-medium">{dStr}</span>
@@ -6901,15 +7022,6 @@ export default function App() {
                       </div>
                     </div>
                   )}
-                </div>
-
-                {/* Info Card */}
-                <div className="bg-blue-50/50 rounded-2xl border border-blue-100 p-4 flex gap-3">
-                  <Info className="w-5 h-5 text-blue-500 shrink-0 mt-0.5" />
-                  <div className="text-xs text-blue-800 leading-relaxed">
-                    <p className="font-bold">Astuce de numérisation :</p>
-                    <p className="mt-0.5">Cliquez sur une date libre pour prendre en photo un ticket, un tableau blanc ou un registre de relève. Vous pouvez zoomer à deux doigts sur mobile pour relire vos notes de production.</p>
-                  </div>
                 </div>
               </div>
 
@@ -6942,22 +7054,6 @@ export default function App() {
                         </h2>
                       </div>
                     </div>
-
-                    {/* Sub-tabs segment switcher */}
-                    <div className="flex bg-slate-100 p-1 rounded-xl self-start sm:self-auto shrink-0 border border-slate-155">
-                      <button
-                        type="button"
-                        onClick={() => setPiloteSubTab('recap')}
-                        className={`px-3 py-1.5 rounded-lg text-[11px] font-extrabold transition-all cursor-pointer ${
-                          piloteSubTab === 'recap'
-                            ? 'bg-white text-blue-600 shadow-3xs'
-                            : 'text-slate-500 hover:text-slate-800'
-                        }`}
-                      >
-                        📝 Rapport de Shift
-                      </button>
-
-                    </div>
                   </div>
 
                   {piloteSubTab === 'recap' && (
@@ -6975,165 +7071,63 @@ export default function App() {
                       )}
 
                       {/* Recap report action hub */}
-                      <div className="flex items-center justify-between gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-150">
-                        <div className="text-xs font-bold text-slate-600 font-sans">
-                          Actions du rapport
+                      {productionRecaps[selectedDateStr]?.photos?.some(p => p !== null) && (
+                        <div className="flex items-center justify-end gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-150">
+                          <button
+                            id="export-photos-html-btn"
+                            onClick={handleExportPhotosHTML}
+                            className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 shadow-2xs shadow-indigo-100 hover:shadow-xs cursor-pointer"
+                            title="Exporter toutes les photos de ce shift sous forme d'une page HTML d'impression autonome"
+                          >
+                            <Camera className="w-3.5 h-3.5 text-indigo-100" />
+                            <span>Exporter HTML Photos</span>
+                          </button>
                         </div>
-                        <div className="flex items-center gap-2">
-                          {productionRecaps[selectedDateStr]?.photos?.some(p => p !== null) && (
-                            <button
-                              id="export-photos-html-btn"
-                              onClick={handleExportPhotosHTML}
-                              className="px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold transition-all flex items-center gap-2 shadow-2xs shadow-indigo-100 hover:shadow-xs cursor-pointer"
-                              title="Exporter toutes les photos de ce shift sous forme d'une page HTML d'impression autonome"
-                            >
-                              <Camera className="w-3.5 h-3.5 text-indigo-100" />
-                              <span>Exporter HTML Photos</span>
-                            </button>
-                          )}
-                        </div>
-                      </div>
+                      )}
 
                       {/* Report Observations Area */}
                       <div className="flex flex-col gap-1.5 text-left">
-                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono flex items-center gap-2">
-                          <FileText className="w-4 h-4 text-slate-400" />
-                          Observations, Incidents & Consignes de Relève :
-                        </label>
-                        <textarea
-                          rows={4}
-                          value={productionRecaps[selectedDateStr]?.notes || ''}
-                          onChange={(e) => handleRecapNotesChange(e.target.value)}
-                          placeholder="Décrivez les rendements, temps d'arrêt, pannes machines ou consignes spécifiques pour l'équipe suivante..."
-                          className="w-full text-xs font-sans border border-slate-200 rounded-xl p-3.5 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all leading-normal text-slate-755 placeholder-slate-400 min-h-[100px]"
-                        />
-                      </div>
-
-                      {/* Photo attachments grid (Exactly 3 slots) */}
-                      <div className="flex flex-col gap-3 mt-1 text-left">
-                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono flex items-center gap-2">
-                          <Camera className="w-4 h-4 text-slate-400" />
-                          Photos du récapitulatif (Exactement 3) :
-                        </label>
-                        
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                          {[0, 1, 2].map((slotIndex) => {
-                            const image64 = productionRecaps[selectedDateStr]?.photos?.[slotIndex] || null;
-                            
-                            return (
-                              <div key={slotIndex} className="flex flex-col gap-1">
-                                {image64 ? (
-                                  <div className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 shadow-3xs bg-slate-950 flex items-center justify-center">
-                                    <img
-                                      src={resolveImageSrc(image64)}
-                                      alt={`Récapitulatif ${slotIndex + 1}`}
-                                      className="w-full h-full object-cover select-none"
-                                      referrerPolicy="no-referrer"
-                                    />
-                                    
-                                    {/* Overlay hover/mobile actions wrapper */}
-                                    <div className="absolute inset-0 bg-slate-950/80 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-2 p-3 text-center">
-                                      <span className="text-[10px] font-bold text-white uppercase tracking-wider">Photo {slotIndex + 1}</span>
-                                      <div className="flex items-center gap-1.5 mt-1">
-                                        <button
-                                          onClick={() => {
-                                            setZoomImage(image64);
-                                            setZoomScale(1.1);
-                                            setZoomRotation(0);
-                                          }}
-                                          className="p-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg transition-all cursor-pointer text-[10px] font-semibold flex items-center gap-1 border border-white/5"
-                                          title="Agrandir l'image"
-                                        >
-                                          <Maximize2 className="w-3 h-3" />
-                                          <span>Zoomer</span>
-                                        </button>
-                                        <button
-                                          onClick={() => handleRecapImageDelete(slotIndex)}
-                                          className="p-1.5 bg-red-650 hover:bg-red-600 text-white rounded-lg transition-all cursor-pointer text-[10px] font-semibold border border-red-500/10"
-                                          title="Supprimer"
-                                        >
-                                          <Trash2 className="w-3 h-3" />
-                                        </button>
-                                      </div>
-                                    </div>
-
-                                    {/* Persistent bottom strip for instant tactile trigger on phones */}
-                                    <div className="absolute bottom-0 left-0 right-0 bg-slate-900/90 py-1 px-2 flex items-center justify-between border-t border-slate-800 z-10 sm:hidden">
-                                      <span className="text-[8px] font-bold text-slate-400 font-mono">Photo {slotIndex + 1}</span>
-                                      <div className="flex items-center gap-2">
-                                        <button
-                                          onClick={() => {
-                                            setZoomImage(image64);
-                                            setZoomScale(1.1);
-                                            setZoomRotation(0);
-                                          }}
-                                          className="p-1 bg-white/5 hover:bg-white/15 text-blue-400 rounded transition-all"
-                                        >
-                                          <Maximize2 className="w-3 h-3" />
-                                        </button>
-                                        <button
-                                          onClick={() => handleRecapImageDelete(slotIndex)}
-                                          className="p-1 bg-red-950/40 text-red-500 rounded transition-all"
-                                        >
-                                          <Trash2 className="w-3 h-3" />
-                                        </button>
-                                      </div>
-                                    </div>
-                                  </div>
-                                ) : (
-                                  <label className={`relative flex flex-col items-center justify-center p-4 border-2 border-dashed border-slate-200 hover:border-blue-400 hover:bg-blue-50/20 bg-slate-50 rounded-xl aspect-square transition-all text-center select-none ${isCompressing ? 'cursor-wait bg-blue-50/10' : 'cursor-pointer'}`}>
-                                    {isCompressing ? (
-                                      <>
-                                        <Loader2 className="w-6 h-6 text-blue-500 animate-spin mb-1.5" />
-                                        <span className="text-[11px] font-bold text-blue-600">Optimisation...</span>
-                                        <span className="text-[9px] text-slate-400 font-medium uppercase font-mono tracking-wider mt-0.5">Compression photo</span>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <Camera className="w-6 h-6 text-slate-400 mb-1.5" />
-                                        <span className="text-[11px] font-bold text-slate-700">Prendre / Charger</span>
-                                        <span className="text-[9px] text-slate-400 font-medium uppercase font-mono tracking-wider mt-0.5">Photo {slotIndex + 1}</span>
-                                      </>
-                                    )}
-                                    <input
-                                      type="file"
-                                      accept="image/*"
-                                      capture="environment"
-                                      disabled={isCompressing}
-                                      onChange={(e) => handleRecapImageUpload(slotIndex, e)}
-                                      className="hidden"
-                                    />
-                                  </label>
-                                )}
-                                {image64 && (
-                                  <div className="flex items-center justify-between px-1 mt-1 text-[10px]">
-                                    <span className="text-slate-500 font-medium font-sans">Photo {slotIndex + 1}</span>
-                                    <PhotoSizeIndicator imageSource={image64} />
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono flex items-center gap-2">
+                            <FileText className="w-4 h-4 text-slate-400" />
+                            Observations, Incidents & Consignes de Relève :
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowObservationModal(true);
+                              setObservationModalMode('view');
+                            }}
+                            className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-[10px] font-extrabold transition-all flex items-center gap-1.5 cursor-pointer shadow-3xs"
+                            title="Ouvrir l'observation en grand dans une pop-up"
+                          >
+                            <Maximize2 className="w-3 h-3 text-blue-600" />
+                            <span>Agrandir / Pop-up</span>
+                          </button>
                         </div>
-                      </div>
-
-                      {/* Summary progress foot */}
-                      <div className="mt-2 text-[10px] text-slate-400 font-medium font-mono flex flex-col sm:flex-row sm:items-center justify-between gap-2 bg-slate-50/80 px-4 py-2.5 rounded-xl border border-slate-100 text-left">
-                        <div className="flex items-center gap-3 flex-wrap">
-                          <span>ID Relève : recaps-{selectedDateStr}</span>
-                          <span className="text-slate-300">|</span>
-                          <TotalPhotosSizeIndicator images={productionRecaps[selectedDateStr]?.photos || [null, null, null]} />
+                        <div className="relative">
+                          <textarea
+                            rows={4}
+                            value={productionRecaps[selectedDateStr]?.notes || ''}
+                            onChange={(e) => handleRecapNotesChange(e.target.value)}
+                            placeholder="Décrivez les rendements, temps d'arrêt, pannes machines ou consignes spécifiques pour l'équipe suivante..."
+                            className="w-full text-xs font-sans border border-slate-200 rounded-xl p-3.5 bg-slate-50/50 hover:bg-slate-50 focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all leading-normal text-slate-755 placeholder-slate-400 min-h-[100px]"
+                          />
+                          {productionRecaps[selectedDateStr]?.notes?.trim().length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowObservationModal(true);
+                                setObservationModalMode('view');
+                              }}
+                              className="absolute bottom-3 right-3 px-2 py-1 bg-white/90 hover:bg-white text-slate-600 hover:text-blue-600 border border-slate-200 rounded-lg text-[10px] font-bold shadow-3xs transition-all flex items-center gap-1 backdrop-blur-xs cursor-pointer"
+                              title="Lire en plein écran dans la pop-up"
+                            >
+                              <Eye className="w-3 h-3 text-blue-500" />
+                              <span>Mode Lecture Pop-up</span>
+                            </button>
+                          )}
                         </div>
-                        <span className="text-slate-655 font-bold uppercase flex items-center gap-1">
-                          📄 Remplissage : {
-                            (() => {
-                              const r = productionRecaps[selectedDateStr];
-                              const ph = r?.photos ? r.photos.filter(p => p !== null).length : 0;
-                              const nt = r?.notes?.trim().length > 0 ? 1 : 0;
-                              return `${ph}/3 photos • Rapport : ${nt ? 'Rempli' : 'Vide'}`;
-                            })()
-                          }
-                        </span>
                       </div>
                     </>
                   )}
@@ -7477,6 +7471,293 @@ export default function App() {
             <p className="mt-3.5 text-[10px] text-slate-500 font-semibold tracking-wider uppercase text-center">
               💡 Glissez l'image pour la déplacer • Double-cliquez n'importe où pour quitter
             </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Observation Pop-up Modal */}
+      <AnimatePresence>
+        {showObservationModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-xs p-3 sm:p-6 overflow-y-auto"
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden font-sans text-slate-800"
+            >
+              {/* Modal Header */}
+              <div className="bg-slate-900 text-white p-4 sm:p-5 flex items-center justify-between gap-3 border-b border-slate-800 shrink-0">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="p-2.5 bg-blue-600/30 border border-blue-500/40 rounded-xl text-blue-400 shrink-0">
+                    <FileText className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0 text-left">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-sm sm:text-base font-extrabold text-white tracking-wide">
+                        Observations & Consignes de Shift
+                      </h3>
+                      <span className="px-2 py-0.5 bg-blue-900/80 text-blue-300 border border-blue-700/60 rounded-md text-[10px] font-mono font-bold">
+                        Pilote Production
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-400 font-medium truncate mt-0.5 capitalize">
+                      {(() => {
+                        try {
+                          const d = new Date(selectedDateStr);
+                          if (isNaN(d.getTime())) return selectedDateStr;
+                          return d.toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+                        } catch {
+                          return selectedDateStr;
+                        }
+                      })()}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 shrink-0">
+                  {/* Mode Switcher */}
+                  <div className="flex bg-slate-800 p-1 rounded-xl border border-slate-700/80">
+                    <button
+                      type="button"
+                      onClick={() => setObservationModalMode('view')}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        observationModalMode === 'view'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Mode Lecture confortable"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Lecture</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setObservationModalMode('edit')}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                        observationModalMode === 'edit'
+                          ? 'bg-blue-600 text-white shadow-xs'
+                          : 'text-slate-400 hover:text-white'
+                      }`}
+                      title="Mode Édition plein écran"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span className="hidden sm:inline">Édition</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowObservationModal(false)}
+                    className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-all cursor-pointer border border-slate-700"
+                    title="Fermer la pop-up"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Modal Toolbar */}
+              <div className="bg-slate-50 p-3 px-4 sm:px-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0 text-left">
+                {observationModalMode === 'view' ? (
+                  <div className="flex items-center gap-3 flex-wrap w-full justify-between">
+                    {/* Font Size Adjuster */}
+                    <div className="flex items-center gap-2 bg-white px-2.5 py-1 rounded-lg border border-slate-200 shadow-3xs">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">Taille texte :</span>
+                      <button
+                        type="button"
+                        onClick={() => setObservationFontSize(s => Math.max(s - 2, 12))}
+                        className="p-1 text-slate-600 hover:bg-slate-100 rounded transition-all cursor-pointer"
+                        title="Réduire la taille du texte"
+                      >
+                        <Minus className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="font-mono font-bold text-slate-700 min-w-[32px] text-center text-xs">
+                        {observationFontSize}px
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setObservationFontSize(s => Math.min(s + 2, 28))}
+                        className="p-1 text-slate-600 hover:bg-slate-100 rounded transition-all cursor-pointer"
+                        title="Agrandir la taille du texte"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const txt = productionRecaps[selectedDateStr]?.notes || '';
+                          if (txt) {
+                            navigator.clipboard.writeText(txt);
+                            setCopiedObservationToast(true);
+                            setTimeout(() => setCopiedObservationToast(false), 2000);
+                          }
+                        }}
+                        className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer shadow-3xs"
+                      >
+                        {copiedObservationToast ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-600" />
+                            <span className="text-emerald-700">Copié !</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5 text-slate-500" />
+                            <span>Copier le texte</span>
+                          </>
+                        )}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setObservationModalMode('edit')}
+                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-bold text-xs transition-all flex items-center gap-1.5 cursor-pointer shadow-2xs"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>Modifier</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 flex-wrap w-full">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">
+                      Insertion rapide :
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const current = productionRecaps[selectedDateStr]?.notes || '';
+                        const snippet = "\n\n🚨 [INCIDENTS & PANNES] :\n- ";
+                        handleRecapNotesChange(current ? current + snippet : "🚨 [INCIDENTS & PANNES] :\n- ");
+                      }}
+                      className="px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded-lg text-[11px] font-bold transition-all cursor-pointer"
+                    >
+                      + Incidents
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const current = productionRecaps[selectedDateStr]?.notes || '';
+                        const snippet = "\n\n⏱️ [TEMPS D'ARRÊT] :\n- Durée : \n- Cause : ";
+                        handleRecapNotesChange(current ? current + snippet : "⏱️ [TEMPS D'ARRÊT] :\n- Durée : \n- Cause : ");
+                      }}
+                      className="px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-[11px] font-bold transition-all cursor-pointer"
+                    >
+                      + Temps d'arrêt
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const current = productionRecaps[selectedDateStr]?.notes || '';
+                        const snippet = "\n\n📋 [CONSIGNES ÉQUIPE SUIVANTE] :\n- ";
+                        handleRecapNotesChange(current ? current + snippet : "📋 [CONSIGNES ÉQUIPE SUIVANTE] :\n- ");
+                      }}
+                      className="px-2.5 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-lg text-[11px] font-bold transition-all cursor-pointer"
+                    >
+                      + Consignes relève
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const current = productionRecaps[selectedDateStr]?.notes || '';
+                        const snippet = "\n\n⚙️ [RÉGLAGES ET CHANGEMENTS] :\n- ";
+                        handleRecapNotesChange(current ? current + snippet : "⚙️ [RÉGLAGES ET CHANGEMENTS] :\n- ");
+                      }}
+                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-lg text-[11px] font-bold transition-all cursor-pointer"
+                    >
+                      + Réglages
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Body */}
+              <div className="p-4 sm:p-6 overflow-y-auto flex-1 bg-white min-h-[300px]">
+                {observationModalMode === 'view' ? (
+                  <div className="h-full flex flex-col">
+                    {productionRecaps[selectedDateStr]?.notes?.trim() ? (
+                      <div
+                        className="w-full text-slate-800 font-sans leading-relaxed whitespace-pre-wrap bg-slate-50/70 p-5 rounded-xl border border-slate-200 text-left selection:bg-blue-100 select-text overflow-x-auto"
+                        style={{ fontSize: `${observationFontSize}px` }}
+                      >
+                        {productionRecaps[selectedDateStr].notes}
+                      </div>
+                    ) : (
+                      <div className="my-auto flex flex-col items-center justify-center p-8 text-center bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                        <div className="p-4 bg-blue-50 text-blue-500 rounded-full mb-3">
+                          <FileText className="w-8 h-8" />
+                        </div>
+                        <h4 className="text-sm font-bold text-slate-700">Aucune observation saisie</h4>
+                        <p className="text-xs text-slate-400 mt-1 max-w-sm">
+                          Aucune consigne ou note d'incident n'a encore été rédigée pour la journée du {selectedDateStr}.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setObservationModalMode('edit')}
+                          className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer flex items-center gap-2"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>Rédiger une observation</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="h-full flex flex-col gap-2">
+                    <textarea
+                      autoFocus
+                      value={productionRecaps[selectedDateStr]?.notes || ''}
+                      onChange={(e) => handleRecapNotesChange(e.target.value)}
+                      placeholder="Rédigez ici vos observations de production, pannes, temps d'arrêt, consignes de relève..."
+                      className="w-full flex-1 min-h-[320px] text-sm font-sans border border-slate-300 rounded-xl p-4 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all text-slate-800 placeholder-slate-400 leading-relaxed resize-y"
+                      style={{ fontSize: `${observationFontSize}px` }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Modal Footer */}
+              <div className="bg-slate-50 p-3 px-4 sm:px-6 border-t border-slate-200 flex items-center justify-between gap-3 text-xs shrink-0 text-left">
+                <div className="flex items-center gap-3 text-[11px] font-mono text-slate-500">
+                  <span>
+                    {(() => {
+                      const text = productionRecaps[selectedDateStr]?.notes || '';
+                      const chars = text.length;
+                      const words = text.trim() ? text.trim().split(/\s+/).length : 0;
+                      return `${words} mots • ${chars} caractères`;
+                    })()}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {observationModalMode === 'edit' ? (
+                    <button
+                      type="button"
+                      onClick={() => setObservationModalMode('view')}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
+                    >
+                      <Check className="w-4 h-4" />
+                      <span>Terminer l'édition</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setShowObservationModal(false)}
+                      className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-xs"
+                    >
+                      Fermer
+                    </button>
+                  )}
+                </div>
+              </div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
